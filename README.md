@@ -1,5 +1,9 @@
 # Overseer
 
+## Setup
+
+- First launch guide: [`docs/CONFIGURING_OVERSEER.md`](docs/CONFIGURING_OVERSEER.md)
+
 ## The Premise
 
 Overseer is not a tool.

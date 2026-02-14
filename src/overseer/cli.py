@@ -1,32 +1,36 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from overseer.codex_store import CodexStore
+from overseer.execution.backend import LocalBackend
+from overseer.git_worktree import GitRepoError, resolve_git_root
 from overseer.human_api import HumanAPI
-from overseer.integrators import CodexIntegrator
+from overseer.integrators import CodexIntegrator, RunRequest
 from overseer.task_store import TaskStore
-from overseer.termination import TerminationPolicy
 
 
 def _services(repo_root: Path | None = None):
-    root = repo_root or Path.cwd()
+    requested_root = repo_root or Path.cwd()
+    root = resolve_git_root(requested_root)
     codex_store = CodexStore(root)
     task_store = TaskStore(codex_store)
     human_api = HumanAPI(codex_store)
-    return codex_store, task_store, human_api
+    backend = LocalBackend(codex_store.codex_root)
+    return codex_store, task_store, human_api, backend
 
 
 def cmd_init(args: argparse.Namespace) -> int:
-    codex_store, _, _ = _services(Path(args.repo_root))
+    codex_store, _, _, _ = _services(Path(args.repo_root))
     codex_store.init_structure()
     print("Initialized codex scaffolding")
     return 0
 
 
 def cmd_add_task(args: argparse.Namespace) -> int:
-    codex_store, task_store, _ = _services(Path(args.repo_root))
+    codex_store, task_store, _, _ = _services(Path(args.repo_root))
     codex_store.init_structure()
     task = task_store.add_task(args.objective)
     print(task["id"])
@@ -34,7 +38,7 @@ def cmd_add_task(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    codex_store, task_store, human_api = _services(Path(args.repo_root))
+    codex_store, task_store, human_api, _ = _services(Path(args.repo_root))
     codex_store.init_structure()
     from overseer.graph import OverseerGraph
 
@@ -45,7 +49,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_brief(args: argparse.Namespace) -> int:
-    codex_store, task_store, human_api = _services(Path(args.repo_root))
+    codex_store, task_store, human_api, _ = _services(Path(args.repo_root))
     codex_store.init_structure()
     tasks = task_store.load_tasks()
     queued = [task for task in tasks if task["status"] == "queued"]
@@ -54,17 +58,46 @@ def cmd_brief(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_integrate(args: argparse.Namespace) -> int:
-    codex_store, task_store, human_api = _services(Path(args.repo_root))
+def _build_integrator(repo_root: Path):
+    codex_store, _, human_api, backend = _services(repo_root)
     codex_store.init_structure()
-    policy = TerminationPolicy.from_codex(codex_store.codex_root)
-    integrator = CodexIntegrator(codex_store.repo_root, task_store=task_store, human_api=human_api, policy=policy)
+    return CodexIntegrator(codex_store.repo_root, human_api=human_api, backend=backend)
 
-    task_store.update_status(args.task, "running")
+
+def cmd_run_agent(args: argparse.Namespace) -> int:
+    codex_store, task_store, _, _ = _services(Path(args.repo_root))
+    codex_store.init_structure()
     task = task_store.get_task(args.task)
-    result = integrator.run_task(task)
-    print(f"task={args.task} status={result['status']}")
+    integrator = _build_integrator(codex_store.repo_root)
+    run_id = integrator.submit(RunRequest(task_id=task["id"], objective=task["objective"]))
+    task_store.update_status(task["id"], "running", run_id=run_id)
+    print(run_id)
     return 0
+
+
+def cmd_runs(args: argparse.Namespace) -> int:
+    integrator = _build_integrator(Path(args.repo_root))
+    for run in integrator.runs():
+        print(f"{run.run_id} task={run.task_id} status={run.status} exit={run.exit_code}")
+    return 0
+
+
+def cmd_run_status(args: argparse.Namespace) -> int:
+    integrator = _build_integrator(Path(args.repo_root))
+    run = integrator.status(args.run)
+    print(f"{run.run_id} task={run.task_id} status={run.status} exit={run.exit_code}")
+    return 0
+
+
+def cmd_execution_worker(args: argparse.Namespace) -> int:
+    meta_path = Path(args.meta)
+    codex_root = meta_path.parents[3]
+    backend = LocalBackend(codex_root)
+    return backend.run_worker(meta_path)
+
+
+def cmd_integrate(args: argparse.Namespace) -> int:
+    return cmd_run_agent(args)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -89,10 +122,33 @@ def build_parser() -> argparse.ArgumentParser:
     integrate_parser = subparsers.add_parser("integrate")
     integrate_parser.add_argument("--task", required=True)
     integrate_parser.set_defaults(func=cmd_integrate)
+
+    run_agent_parser = subparsers.add_parser("run-agent")
+    run_agent_parser.add_argument("--task", required=True)
+    run_agent_parser.set_defaults(func=cmd_run_agent)
+
+    runs_parser = subparsers.add_parser("runs")
+    runs_parser.set_defaults(func=cmd_runs)
+
+    run_status_parser = subparsers.add_parser("run-status")
+    run_status_parser.add_argument("--run", required=True)
+    run_status_parser.set_defaults(func=cmd_run_status)
+
+    worker_parser = subparsers.add_parser("execution-worker")
+    worker_parser.add_argument("--meta", required=True)
+    worker_parser.set_defaults(func=cmd_execution_worker)
+
     return parser
 
 
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    return args.func(args)
+    try:
+        return args.func(args)
+    except GitRepoError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
