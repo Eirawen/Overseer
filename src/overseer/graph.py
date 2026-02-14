@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -11,6 +10,7 @@ from langchain import __version__ as _langchain_version  # noqa: F401
 
 from overseer.codex_store import CodexStore
 from overseer.human_api import HumanAPI
+from overseer.integrators import CodexIntegrator, Integrator
 from overseer.task_store import TaskStore
 from overseer.termination import TerminationPolicy
 
@@ -29,43 +29,20 @@ class RunState(TypedDict, total=False):
     decision: str
 
 
-def _mock_builder_report(task: dict[str, Any], state: RunState) -> dict[str, Any]:
-    objective = task["objective"]
-    failing = 2 if "force-test-fail" in objective else 0
-    previous = state.get("last_failing_tests")
-    progress = previous is None or failing < previous
-    return {
-        "agent": "builder",
-        "summary": "Builder execution complete",
-        "tests": {"failing": failing},
-        "progress": progress,
-    }
-
-
-def _mock_reviewer_report(task: dict[str, Any], _state: RunState) -> dict[str, Any]:
-    approve = "force-review-reject" not in task["objective"]
-    return {
-        "agent": "reviewer",
-        "approved": approve,
-        "summary": "Reviewer approval" if approve else "Reviewer requests changes",
-    }
-
-
-def _mock_verifier_report(task: dict[str, Any], reviewer_report: dict[str, Any]) -> dict[str, Any]:
-    approved = not reviewer_report["approved"] if "force-escalate-disagreement" in task["objective"] else reviewer_report["approved"]
-    return {
-        "agent": "verifier",
-        "approved": approved,
-        "summary": "Verifier validation complete",
-    }
-
 
 class OverseerGraph:
     # TODO: Read autonomy dial + merge policy from codex/01_PROJECT/OPERATING_MODE.md.
-    def __init__(self, codex_store: CodexStore, task_store: TaskStore, human_api: HumanAPI) -> None:
+    def __init__(
+        self,
+        codex_store: CodexStore,
+        task_store: TaskStore,
+        human_api: HumanAPI,
+        integrator: Integrator | None = None,
+    ) -> None:
         self.codex_store = codex_store
         self.task_store = task_store
         self.human_api = human_api
+        self.integrator = integrator or CodexIntegrator(codex_store.repo_root)
         self.policy = TerminationPolicy.from_codex(codex_store.codex_root)
         self.run_log_path = codex_store.codex_root / "08_TELEMETRY" / "RUN_LOG.jsonl"
 
@@ -107,7 +84,7 @@ class OverseerGraph:
         }
 
     def run_builder(self, state: RunState) -> RunState:
-        report = _mock_builder_report(state["task"], state)
+        report = self.integrator.run_task({"role": "builder", "task": state["task"], "state": state})
         self._write_worker_note("builder", state["task"]["id"], report["summary"])
 
         fail_count = report["tests"]["failing"]
@@ -125,12 +102,14 @@ class OverseerGraph:
         }
 
     def run_reviewer(self, state: RunState) -> RunState:
-        report = _mock_reviewer_report(state["task"], state)
+        report = self.integrator.run_task({"role": "reviewer", "task": state["task"], "state": state})
         self._write_worker_note("reviewer", state["task"]["id"], report["summary"])
         return {**state, "reviewer_report": report}
 
     def run_verifier(self, state: RunState) -> RunState:
-        verifier = _mock_verifier_report(state["task"], state["reviewer_report"])
+        verifier = self.integrator.run_task(
+            {"role": "verifier", "task": state["task"], "state": state, "reviewer_report": state["reviewer_report"]}
+        )
         self._write_worker_note("verifier", state["task"]["id"], verifier["summary"])
 
         disputes = state.get("verifier_disputes", 0)
