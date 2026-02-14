@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
+
+
+HAS_LANGGRAPH = importlib.util.find_spec("langgraph") is not None
+HAS_LANGCHAIN = importlib.util.find_spec("langchain") is not None
+HAS_RUNTIME_DEPS = HAS_LANGGRAPH and HAS_LANGCHAIN
 
 
 def run_cli(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -27,22 +35,14 @@ def test_init_validates_codex_structure(tmp_path: Path) -> None:
     assert (repo / "codex" / "11_WORKERS" / "builder").exists()
 
 
-def test_init_copies_real_canonical_docs_and_keeps_queue_empty(tmp_path: Path) -> None:
+def test_init_keeps_canonical_docs_untouched_and_queue_empty(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
-    (repo / "codex" / "PROJECT").mkdir(parents=True)
-    (repo / "codex" / "MEMORY").mkdir(parents=True)
-    (repo / "codex" / "HUMAN_API").mkdir(parents=True)
-    (repo / "codex" / "AGENTS").mkdir(parents=True)
-
-    (repo / "codex" / "PROJECT" / "OPERATING_MODE.md").write_text("REAL MODE\n", encoding="utf-8")
-    (repo / "codex" / "MEMORY" / "DECISION_LOG.md").write_text("REAL DECISIONS\n", encoding="utf-8")
-    (repo / "codex" / "HUMAN_API" / "REQUEST_SCHEMA.md").write_text("REAL REQUEST SCHEMA\n", encoding="utf-8")
-    (repo / "codex" / "AGENTS" / "TERMINATION.md").write_text("max review cycles per task: 3\n", encoding="utf-8")
+    (repo / "codex" / "01_PROJECT").mkdir(parents=True)
+    (repo / "codex" / "01_PROJECT" / "OPERATING_MODE.md").write_text("REAL MODE\n", encoding="utf-8")
 
     run_cli(repo, "init")
 
     assert (repo / "codex" / "01_PROJECT" / "OPERATING_MODE.md").read_text(encoding="utf-8") == "REAL MODE\n"
-    assert (repo / "codex" / "04_HUMAN_API" / "REQUEST_SCHEMA.md").read_text(encoding="utf-8") == "REAL REQUEST SCHEMA\n"
     queue = (repo / "codex" / "04_HUMAN_API" / "HUMAN_QUEUE.md").read_text(encoding="utf-8")
     assert "(empty)" in queue
     assert "HUMAN_REQUEST:" not in queue
@@ -64,6 +64,7 @@ def test_add_task_appends_valid_jsonl(tmp_path: Path) -> None:
     assert "created_at" in payload
 
 
+@pytest.mark.skipif(not HAS_RUNTIME_DEPS, reason="langgraph/langchain not installed in test environment")
 def test_run_writes_run_log_updates_status_and_worker_notes(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / "codex").mkdir(parents=True)
@@ -83,6 +84,7 @@ def test_run_writes_run_log_updates_status_and_worker_notes(tmp_path: Path) -> N
     assert task_id in (repo / "codex" / "11_WORKERS" / "builder" / "NOTES.md").read_text(encoding="utf-8")
 
 
+@pytest.mark.skipif(not HAS_RUNTIME_DEPS, reason="langgraph/langchain not installed in test environment")
 def test_escalation_writes_human_request_format(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / "codex").mkdir(parents=True)
@@ -98,6 +100,7 @@ def test_escalation_writes_human_request_format(tmp_path: Path) -> None:
     assert task_id in queue
 
 
+@pytest.mark.skipif(not HAS_RUNTIME_DEPS, reason="langgraph/langchain not installed in test environment")
 def test_disagreement_escalates_after_two_disputes(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / "codex").mkdir(parents=True)
@@ -114,6 +117,7 @@ def test_disagreement_escalates_after_two_disputes(tmp_path: Path) -> None:
     assert logs[-1]["verifier_disputes"] >= 2
 
 
+@pytest.mark.skipif(not HAS_RUNTIME_DEPS, reason="langgraph/langchain not installed in test environment")
 def test_termination_policy_is_loaded_from_codex_file(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / "codex").mkdir(parents=True)

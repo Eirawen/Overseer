@@ -43,20 +43,18 @@ class CodexStore:
             raise FileNotFoundError("Missing required codex directory")
 
     def init_structure(self) -> None:
-        """Create missing structure only; never overwrite authored canonical docs."""
+        """Create missing structure only; never overwrite canonical numbered docs."""
         self.ensure_codex_root()
         for directory in self.layout.required_dirs:
             directory.mkdir(parents=True, exist_ok=True)
 
-        # Canonical numbered files are sourced from legacy authored docs if available.
-        self._ensure_from_existing("PROJECT/OPERATING_MODE.md", "01_PROJECT/OPERATING_MODE.md", "# Operating Mode\n")
-        self._ensure_from_existing("MEMORY/DECISION_LOG.md", "02_MEMORY/DECISION_LOG.md", "# Decision Log\n")
-        self._ensure_from_existing("HUMAN_API/REQUEST_SCHEMA.md", "04_HUMAN_API/REQUEST_SCHEMA.md", "# Human Request Schema\n")
-        self._ensure_from_existing("AGENTS/TERMINATION.md", "05_AGENTS/TERMINATION.md", "# Termination & Recursion Rules\n")
-
+        self._ensure_file("01_PROJECT/OPERATING_MODE.md", "# Operating Mode\n")
+        self._ensure_file("02_MEMORY/DECISION_LOG.md", "# Decision Log\n")
         self._ensure_file("03_WORK/TASK_GRAPH.jsonl", "")
-        self._ensure_file("08_TELEMETRY/RUN_LOG.jsonl", "")
+        self._ensure_file("04_HUMAN_API/REQUEST_SCHEMA.md", "# Human Request Schema\n")
         self._ensure_file("04_HUMAN_API/HUMAN_QUEUE.md", EMPTY_HUMAN_QUEUE)
+        self._ensure_file("05_AGENTS/TERMINATION.md", "# Termination & Recursion Rules\n")
+        self._ensure_file("08_TELEMETRY/RUN_LOG.jsonl", "")
 
         self._ensure_file("10_OVERSEER/.gitkeep", "")
         self._ensure_file("11_WORKERS/builder/.gitkeep", "")
@@ -67,14 +65,6 @@ class CodexStore:
         path = self.codex_root / relative_path
         if not path.exists():
             path.write_text(content, encoding="utf-8")
-
-    def _ensure_from_existing(self, source_rel: str, target_rel: str, fallback: str) -> None:
-        target = self.codex_root / target_rel
-        if target.exists():
-            return
-        source = self.codex_root / source_rel
-        content = source.read_text(encoding="utf-8") if source.exists() else fallback
-        target.write_text(content, encoding="utf-8")
 
     def assert_write_allowed(self, actor: str, target: Path) -> None:
         target = target.resolve()

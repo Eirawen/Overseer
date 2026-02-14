@@ -5,15 +5,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypedDict
 
-try:
-    from langgraph.graph import END, START, StateGraph
-except ModuleNotFoundError:  # pragma: no cover - exercised only in offline/minimal envs
-    from overseer.graph_runtime import END, START, StateGraph
+from langgraph.graph import END, START, StateGraph
 
-try:
-    from langchain import __version__ as _langchain_version  # noqa: F401
-except ModuleNotFoundError:  # pragma: no cover
-    _langchain_version = "unavailable"
+from langchain import __version__ as _langchain_version  # noqa: F401
 
 from overseer.codex_store import CodexStore
 from overseer.human_api import HumanAPI
@@ -67,6 +61,7 @@ def _mock_verifier_report(task: dict[str, Any], reviewer_report: dict[str, Any])
 
 
 class OverseerGraph:
+    # TODO: Read autonomy dial + merge policy from codex/01_PROJECT/OPERATING_MODE.md.
     def __init__(self, codex_store: CodexStore, task_store: TaskStore, human_api: HumanAPI) -> None:
         self.codex_store = codex_store
         self.task_store = task_store
