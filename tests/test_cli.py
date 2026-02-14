@@ -239,3 +239,40 @@ def test_termination_policy_is_loaded_from_codex_file(tmp_path: Path) -> None:
     logs = [json.loads(line) for line in (repo / "codex" / "08_TELEMETRY" / "RUN_LOG.jsonl").read_text(encoding="utf-8").splitlines() if line]
     assert logs[-1]["status"] == "escalated"
     assert logs[-1]["cycle_count"] == 1
+
+
+@pytest.mark.skipif(not HAS_RUNTIME_DEPS, reason="langgraph/langchain not installed in test environment")
+def test_nonzero_without_diff_progress_escalates_with_diagnosis_packet(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+    (repo / "codex.log").write_text("\n".join(f"line-{i}" for i in range(250)), encoding="utf-8")
+    task_id = run_cli(repo, "add-task", "force-nonzero-no-diff-progress").stdout.strip()
+
+    run_cli(repo, "run", "--task", task_id)
+
+    tasks = [json.loads(line) for line in (repo / "codex" / "03_WORK" / "TASK_GRAPH.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    task = next(t for t in tasks if t["id"] == task_id)
+    assert task["status"] == "escalated"
+    assert task["escalation_reason"] == "integrator exited non-zero twice without diff progress"
+    assert task["escalation_packet"]["last_exit_code"] == 1
+
+    queue = (repo / "codex" / "04_HUMAN_API" / "HUMAN_QUEUE.md").read_text(encoding="utf-8")
+    assert "DIAGNOSIS_PACKET:" in queue
+    assert "line-50" in queue
+
+
+@pytest.mark.skipif(not HAS_RUNTIME_DEPS, reason="langgraph/langchain not installed in test environment")
+def test_unchanged_diff_escalates_and_is_persisted_to_telemetry(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+    task_id = run_cli(repo, "add-task", "force-review-reject force-unchanged-diff").stdout.strip()
+
+    run_cli(repo, "run", "--task", task_id)
+
+    logs = [json.loads(line) for line in (repo / "codex" / "08_TELEMETRY" / "RUN_LOG.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    latest = logs[-1]
+    assert latest["status"] == "escalated"
+    assert latest["escalation_reason"] == "integrator diff unchanged across two attempts"
+    assert latest["escalation_packet"]["diff_summary"]["changed_files"] >= 0
