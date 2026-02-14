@@ -74,7 +74,7 @@ def test_run_writes_run_log_updates_status_and_worker_notes(tmp_path: Path) -> N
     run_cli(repo, "run", "--task", task_id)
 
     tasks = [json.loads(line) for line in (repo / "codex" / "03_WORK" / "TASK_GRAPH.jsonl").read_text(encoding="utf-8").splitlines() if line]
-    task = next(t for t in tasks if t["id"] == task_id)
+    task = [t for t in tasks if t["id"] == task_id][-1]
     assert task["status"] == "done"
 
     logs = [json.loads(line) for line in (repo / "codex" / "08_TELEMETRY" / "RUN_LOG.jsonl").read_text(encoding="utf-8").splitlines() if line]
@@ -110,7 +110,7 @@ def test_disagreement_escalates_after_two_disputes(tmp_path: Path) -> None:
     run_cli(repo, "run", "--task", task_id)
 
     tasks = [json.loads(line) for line in (repo / "codex" / "03_WORK" / "TASK_GRAPH.jsonl").read_text(encoding="utf-8").splitlines() if line]
-    task = next(t for t in tasks if t["id"] == task_id)
+    task = [t for t in tasks if t["id"] == task_id][-1]
     assert task["status"] == "escalated"
 
     logs = [json.loads(line) for line in (repo / "codex" / "08_TELEMETRY" / "RUN_LOG.jsonl").read_text(encoding="utf-8").splitlines() if line]
