@@ -4,7 +4,6 @@ import hashlib
 import json
 import subprocess
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -13,6 +12,7 @@ from langchain import __version__ as _langchain_version  # noqa: F401
 
 from overseer.codex_store import CodexStore
 from overseer.human_api import HumanAPI
+from overseer.integrators import CodexIntegrator, Integrator
 from overseer.task_store import TaskStore
 from overseer.termination import TerminationPolicy
 
@@ -78,12 +78,76 @@ def _mock_verifier_report(task: dict[str, Any], reviewer_report: dict[str, Any])
 
 class OverseerGraph:
     # TODO: Read autonomy dial + merge policy from codex/01_PROJECT/OPERATING_MODE.md.
-    def __init__(self, codex_store: CodexStore, task_store: TaskStore, human_api: HumanAPI) -> None:
+    def __init__(
+        self,
+        codex_store: CodexStore,
+        task_store: TaskStore,
+        human_api: HumanAPI,
+        integrator: Integrator | None = None,
+    ) -> None:
         self.codex_store = codex_store
         self.task_store = task_store
         self.human_api = human_api
+        self.integrator = integrator or CodexIntegrator(codex_store.repo_root)
         self.policy = TerminationPolicy.from_codex(codex_store.codex_root)
         self.run_log_path = codex_store.codex_root / "08_TELEMETRY" / "RUN_LOG.jsonl"
+
+    def _record_integrate_attempt(self, state: RunState, report: dict[str, Any], attempt_number: int) -> None:
+        task_id = state["task"]["id"]
+        run_dir = self.codex_store.codex_root / "10_OVERSEER" / "runs" / task_id
+        self.codex_store.assert_write_allowed("overseer", run_dir / ".")
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        codex_log_path = run_dir / "codex.log"
+        meta_path = run_dir / "meta.json"
+        patch_path = run_dir / "patch.diff"
+
+        for path in (codex_log_path, meta_path, patch_path):
+            self.codex_store.assert_write_allowed("overseer", path)
+
+        worktree_path = self.codex_store.repo_root.resolve()
+        branch = "unknown"
+        branch_result = subprocess.run(
+            ["git", "-C", str(worktree_path), "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if branch_result.returncode == 0:
+            branch = branch_result.stdout.strip() or "detached"
+
+        command_argv = ["codex", "integrate", "--task", task_id, "--attempt", str(attempt_number)]
+        exit_code = 0
+
+        diff_result = subprocess.run(
+            ["git", "-C", str(worktree_path), "diff"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        patch_path.write_text(diff_result.stdout, encoding="utf-8")
+
+        log_sections = [
+            "=== stdout ===",
+            report["summary"],
+            f"tests_failing={report['tests']['failing']}",
+            f"progress={report['progress']}",
+            "",
+            "=== stderr ===",
+        ]
+        if diff_result.returncode != 0:
+            log_sections.append(diff_result.stderr.strip())
+        codex_log_path.write_text("\n".join(log_sections).rstrip() + "\n", encoding="utf-8")
+
+        meta = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "command_argv": command_argv,
+            "exit_code": exit_code,
+            "worktree_path": str(worktree_path),
+            "branch": branch,
+            "attempt_number": attempt_number,
+        }
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
     def compile(self):
         workflow = StateGraph(RunState)
@@ -157,7 +221,7 @@ class OverseerGraph:
         }
 
     def run_builder(self, state: RunState) -> RunState:
-        report = _mock_builder_report(state["task"], state)
+        report = self.integrator.run_task({"role": "builder", "task": state["task"], "state": state})
         self._write_worker_note("builder", state["task"]["id"], report["summary"])
 
         fail_count = report["tests"]["failing"]
@@ -180,12 +244,14 @@ class OverseerGraph:
         }
 
     def run_reviewer(self, state: RunState) -> RunState:
-        report = _mock_reviewer_report(state["task"], state)
+        report = self.integrator.run_task({"role": "reviewer", "task": state["task"], "state": state})
         self._write_worker_note("reviewer", state["task"]["id"], report["summary"])
         return {**state, "reviewer_report": report}
 
     def run_verifier(self, state: RunState) -> RunState:
-        verifier = _mock_verifier_report(state["task"], state["reviewer_report"])
+        verifier = self.integrator.run_task(
+            {"role": "verifier", "task": state["task"], "state": state, "reviewer_report": state["reviewer_report"]}
+        )
         self._write_worker_note("verifier", state["task"]["id"], verifier["summary"])
 
         disputes = state.get("verifier_disputes", 0)
