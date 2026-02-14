@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypedDict
@@ -69,6 +70,63 @@ class OverseerGraph:
         self.policy = TerminationPolicy.from_codex(codex_store.codex_root)
         self.run_log_path = codex_store.codex_root / "08_TELEMETRY" / "RUN_LOG.jsonl"
 
+    def _record_integrate_attempt(self, state: RunState, report: dict[str, Any], attempt_number: int) -> None:
+        task_id = state["task"]["id"]
+        run_dir = self.codex_store.codex_root / "10_OVERSEER" / "runs" / task_id
+        self.codex_store.assert_write_allowed("overseer", run_dir / ".")
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        codex_log_path = run_dir / "codex.log"
+        meta_path = run_dir / "meta.json"
+        patch_path = run_dir / "patch.diff"
+
+        for path in (codex_log_path, meta_path, patch_path):
+            self.codex_store.assert_write_allowed("overseer", path)
+
+        worktree_path = self.codex_store.repo_root.resolve()
+        branch = "unknown"
+        branch_result = subprocess.run(
+            ["git", "-C", str(worktree_path), "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if branch_result.returncode == 0:
+            branch = branch_result.stdout.strip() or "detached"
+
+        command_argv = ["codex", "integrate", "--task", task_id, "--attempt", str(attempt_number)]
+        exit_code = 0
+
+        diff_result = subprocess.run(
+            ["git", "-C", str(worktree_path), "diff"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        patch_path.write_text(diff_result.stdout, encoding="utf-8")
+
+        log_sections = [
+            "=== stdout ===",
+            report["summary"],
+            f"tests_failing={report['tests']['failing']}",
+            f"progress={report['progress']}",
+            "",
+            "=== stderr ===",
+        ]
+        if diff_result.returncode != 0:
+            log_sections.append(diff_result.stderr.strip())
+        codex_log_path.write_text("\n".join(log_sections).rstrip() + "\n", encoding="utf-8")
+
+        meta = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "command_argv": command_argv,
+            "exit_code": exit_code,
+            "worktree_path": str(worktree_path),
+            "branch": branch,
+            "attempt_number": attempt_number,
+        }
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
     def compile(self):
         workflow = StateGraph(RunState)
         workflow.add_node("plan_task", self.plan_task)
@@ -108,6 +166,8 @@ class OverseerGraph:
 
     def run_builder(self, state: RunState) -> RunState:
         report = _mock_builder_report(state["task"], state)
+        attempt_number = state.get("cycle_count", 0) + 1
+        self._record_integrate_attempt(state, report, attempt_number)
         self._write_worker_note("builder", state["task"]["id"], report["summary"])
 
         fail_count = report["tests"]["failing"]
