@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,6 +57,46 @@ def cmd_brief(args: argparse.Namespace) -> int:
     return 0
 
 
+def _validate_git_repository_context(repo_root: Path) -> None:
+    try:
+        subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--is-inside-work-tree"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(f"Invalid git repository context: {repo_root}") from exc
+
+
+def cmd_integrate(args: argparse.Namespace) -> int:
+    repo_root = Path(args.repo_root)
+    codex_store, task_store, _ = _services(repo_root)
+    codex_store.init_structure()
+    _validate_git_repository_context(repo_root)
+
+    from overseer.integrator import CodexIntegrator
+
+    task_store.update_status(args.task, "running")
+    integrator = CodexIntegrator(repo_root=repo_root, codex_store=codex_store, task_store=task_store)
+
+    try:
+        result = integrator.run_task(args.task)
+    except Exception:
+        task_store.update_status(args.task, "escalated")
+        raise
+
+    if isinstance(result, dict):
+        diff = str(result.get("diff", ""))
+        failed = bool(result.get("escalated")) or result.get("status") == "escalated" or result.get("success") is False
+    else:
+        diff = str(result)
+        failed = False
+
+    next_status = "awaiting_review" if (not failed and diff.strip()) else "escalated"
+    task_store.update_status(args.task, next_status)
+    print(f"task={args.task} status={next_status}")
+    return 0
 def _append_integrator_telemetry(
     codex_store: CodexStore,
     task_id: str,
