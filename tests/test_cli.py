@@ -24,6 +24,28 @@ def run_cli(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def init_git_repo(repo: Path) -> None:
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+    (repo / ".gitignore").write_text(".pytest_cache/\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "init",
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 def test_init_validates_codex_structure(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / "codex").mkdir(parents=True)
@@ -138,3 +160,52 @@ def test_termination_policy_is_loaded_from_codex_file(tmp_path: Path) -> None:
     logs = [json.loads(line) for line in (repo / "codex" / "08_TELEMETRY" / "RUN_LOG.jsonl").read_text(encoding="utf-8").splitlines() if line]
     assert logs[-1]["status"] == "escalated"
     assert logs[-1]["cycle_count"] == 1
+
+
+def test_integrate_sets_awaiting_review_when_diff_exists(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    init_git_repo(repo)
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+    task_id = run_cli(repo, "add-task", "integration objective").stdout.strip()
+
+    (repo / ".gitignore").write_text(".pytest_cache/\nnew-entry\n", encoding="utf-8")
+    run_cli(repo, "integrate", "--task", task_id)
+
+    tasks = [json.loads(line) for line in (repo / "codex" / "03_WORK" / "TASK_GRAPH.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    task = next(t for t in tasks if t["id"] == task_id)
+    assert task["status"] == "awaiting_review"
+
+
+def test_integrate_sets_escalated_when_diff_is_empty(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    init_git_repo(repo)
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+    task_id = run_cli(repo, "add-task", "integration objective").stdout.strip()
+
+    run_cli(repo, "integrate", "--task", task_id)
+
+    tasks = [json.loads(line) for line in (repo / "codex" / "03_WORK" / "TASK_GRAPH.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    task = next(t for t in tasks if t["id"] == task_id)
+    assert task["status"] == "escalated"
+
+
+def test_integrate_requires_git_repository_context(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+    task_id = run_cli(repo, "add-task", "integration objective").stdout.strip()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "overseer", "--repo-root", str(repo), "integrate", "--task", task_id],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "Invalid git repository context" in result.stderr
