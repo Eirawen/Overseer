@@ -11,3 +11,6 @@ If an Overseer instance is replaced, it MUST:
 - skim DECISION_LOG and RISKS
 - read the latest CONTEXT_STREAM snapshot
 - perform the HANDOFF_PROTOCOL ceremony (if possible)
+
+As for workers, workers *MUST* update 
+-their worker/type directory corresponding to the type of worker they are.
