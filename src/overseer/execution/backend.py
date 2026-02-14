@@ -12,6 +12,7 @@ from typing import Literal, Protocol
 from uuid import uuid4
 
 from overseer.fs import atomic_write_text, test_delay_meta_after_read
+from overseer.human_api import HumanAPI
 from overseer.locks import file_lock
 
 RunStatus = Literal["queued", "running", "done", "failed", "canceled"]
@@ -47,6 +48,7 @@ class ExecutionRecord:
     ended_at: str | None = None
     exit_code: int | None = None
     worker_pid: int | None = None
+    notes_enforced: bool = False
 
 
 class ExecutionBackend(Protocol):
@@ -60,10 +62,14 @@ class ExecutionBackend(Protocol):
 
 
 class LocalBackend:
-    def __init__(self, codex_root: Path) -> None:
+    def __init__(
+        self, codex_root: Path, human_api: HumanAPI | None = None, worker_role: str = "builder"
+    ) -> None:
         self.codex_root = codex_root
         self.runs_root = codex_root / "08_TELEMETRY" / "runs"
         self.runs_root.mkdir(parents=True, exist_ok=True)
+        self.human_api = human_api
+        self.worker_role = worker_role
 
     @staticmethod
     def new_run_id() -> str:
@@ -109,12 +115,17 @@ class LocalBackend:
         return request.run_id
 
     def status(self, run_id: str) -> ExecutionRecord:
-        return self._read_record(self.runs_root / run_id / "meta.json")
+        meta_path = self.runs_root / run_id / "meta.json"
+        with file_lock(self._meta_lock_path(meta_path)):
+            record = self._read_record(meta_path)
+            return self._enforce_required_notes(record, meta_path)
 
     def list_runs(self) -> list[ExecutionRecord]:
         records: list[ExecutionRecord] = []
         for meta in sorted(self.runs_root.glob("*/meta.json")):
-            records.append(self._read_record(meta))
+            with file_lock(self._meta_lock_path(meta)):
+                record = self._read_record(meta)
+                records.append(self._enforce_required_notes(record, meta))
         return records
 
     def cancel(self, run_id: str) -> ExecutionRecord:
@@ -159,6 +170,8 @@ class LocalBackend:
                     check=False,
                 )
 
+        self._write_required_notes(record)
+
         with file_lock(self._meta_lock_path(meta_path)):
             record = self._read_record(meta_path)
             test_delay_meta_after_read()
@@ -168,6 +181,43 @@ class LocalBackend:
                 record.status = "done" if result.returncode == 0 else "failed"
             self._write_record(meta_path, record)
         return result.returncode
+
+    def _write_required_notes(self, record: ExecutionRecord) -> None:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        run_notes = self.runs_root / record.run_id / "notes.md"
+        run_notes.parent.mkdir(parents=True, exist_ok=True)
+        with run_notes.open("a", encoding="utf-8") as handle:
+            handle.write(f"- [{timestamp}] role={self.worker_role} run={record.run_id} task={record.task_id}\n")
+
+        worker_notes = self.codex_root / "11_WORKERS" / self.worker_role / "NOTES.md"
+        worker_notes.parent.mkdir(parents=True, exist_ok=True)
+        with worker_notes.open("a", encoding="utf-8") as handle:
+            handle.write(f"- [{timestamp}] run={record.run_id} task={record.task_id}\n")
+
+    def _enforce_required_notes(self, record: ExecutionRecord, meta_path: Path) -> ExecutionRecord:
+        if record.status not in TERMINAL_STATUSES or record.notes_enforced:
+            return record
+
+        run_notes = self.runs_root / record.run_id / "notes.md"
+        worker_notes = self.codex_root / "11_WORKERS" / self.worker_role / "NOTES.md"
+        has_run_notes = run_notes.exists() and bool(run_notes.read_text(encoding="utf-8").strip())
+        has_worker_notes = worker_notes.exists() and record.run_id in worker_notes.read_text(encoding="utf-8")
+
+        if has_run_notes and has_worker_notes:
+            record.notes_enforced = True
+            self._write_record(meta_path, record)
+            return record
+
+        record.status = "failed"
+        record.notes_enforced = True
+        if record.exit_code is None:
+            record.exit_code = 1
+        if record.ended_at is None:
+            record.ended_at = datetime.now(timezone.utc).isoformat()
+        self._write_record(meta_path, record)
+        if self.human_api is not None:
+            self.human_api.append_request({"id": record.task_id}, "missing required notes")
+        return record
 
     def _write_record(self, path: Path, record: ExecutionRecord) -> None:
         text = json.dumps(asdict(record), indent=2) + "\n"
