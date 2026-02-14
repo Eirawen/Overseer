@@ -24,6 +24,28 @@ def run_cli(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def init_git_repo(repo: Path) -> None:
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+    (repo / ".gitignore").write_text(".pytest_cache/\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "init",
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 def test_init_validates_codex_structure(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / "codex").mkdir(parents=True)
@@ -62,6 +84,83 @@ def test_add_task_appends_valid_jsonl(tmp_path: Path) -> None:
     assert payload["status"] == "queued"
     assert payload["objective"] == "scaffold sanity check"
     assert "created_at" in payload
+
+
+def test_integrate_appends_integrator_telemetry(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+
+    (repo / "patch.diff").write_text("diff --git a/a b/a\n", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "overseer",
+            "--repo-root",
+            str(repo),
+            "integrate",
+            "--task",
+            "task-123",
+            "--attempt-number",
+            "2",
+            "--exit-code",
+            "0",
+            "--patch-diff",
+            str(repo / "patch.diff"),
+            "--note",
+            "dry-run",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+
+    logs = [json.loads(line) for line in (repo / "codex" / "08_TELEMETRY" / "RUN_LOG.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    assert logs[-1]["phase"] == "integrator"
+    assert logs[-1]["task_id"] == "task-123"
+    assert logs[-1]["attempt_number"] == 2
+    assert logs[-1]["exit_code"] == 0
+    assert logs[-1]["diff_present"] is True
+    assert logs[-1]["diagnostics"]["note"] == "dry-run"
+
+
+def test_integrate_logs_empty_diff(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+
+    (repo / "patch.diff").write_text("\n", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "overseer",
+            "--repo-root",
+            str(repo),
+            "integrate",
+            "--task",
+            "task-124",
+            "--attempt-number",
+            "1",
+            "--exit-code",
+            "7",
+            "--patch-diff",
+            str(repo / "patch.diff"),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+
+    logs = [json.loads(line) for line in (repo / "codex" / "08_TELEMETRY" / "RUN_LOG.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    assert logs[-1]["phase"] == "integrator"
+    assert logs[-1]["exit_code"] == 7
+    assert logs[-1]["diff_present"] is False
 
 
 @pytest.mark.skipif(not HAS_RUNTIME_DEPS, reason="langgraph/langchain not installed in test environment")
@@ -118,6 +217,30 @@ def test_disagreement_escalates_after_two_disputes(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not HAS_RUNTIME_DEPS, reason="langgraph/langchain not installed in test environment")
+def test_run_records_integrate_attempt_artifacts(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+    task_id = run_cli(repo, "add-task", "normal objective").stdout.strip()
+
+    run_cli(repo, "run", "--task", task_id)
+
+    run_dir = repo / "codex" / "10_OVERSEER" / "runs" / task_id
+    codex_log = run_dir / "codex.log"
+    meta = run_dir / "meta.json"
+    patch = run_dir / "patch.diff"
+
+    assert codex_log.exists()
+    assert meta.exists()
+    assert patch.exists()
+
+    payload = json.loads(meta.read_text(encoding="utf-8"))
+    assert payload["attempt_number"] == 1
+    assert payload["exit_code"] == 0
+    assert payload["command_argv"][:2] == ["codex", "integrate"]
+
+
+@pytest.mark.skipif(not HAS_RUNTIME_DEPS, reason="langgraph/langchain not installed in test environment")
 def test_termination_policy_is_loaded_from_codex_file(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / "codex").mkdir(parents=True)
@@ -138,3 +261,87 @@ def test_termination_policy_is_loaded_from_codex_file(tmp_path: Path) -> None:
     logs = [json.loads(line) for line in (repo / "codex" / "08_TELEMETRY" / "RUN_LOG.jsonl").read_text(encoding="utf-8").splitlines() if line]
     assert logs[-1]["status"] == "escalated"
     assert logs[-1]["cycle_count"] == 1
+
+
+def test_integrate_sets_awaiting_review_when_diff_exists(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    init_git_repo(repo)
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+    task_id = run_cli(repo, "add-task", "integration objective").stdout.strip()
+
+    (repo / ".gitignore").write_text(".pytest_cache/\nnew-entry\n", encoding="utf-8")
+    run_cli(repo, "integrate", "--task", task_id)
+
+    tasks = [json.loads(line) for line in (repo / "codex" / "03_WORK" / "TASK_GRAPH.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    task = next(t for t in tasks if t["id"] == task_id)
+    assert task["status"] == "awaiting_review"
+
+
+def test_integrate_sets_escalated_when_diff_is_empty(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    init_git_repo(repo)
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+    task_id = run_cli(repo, "add-task", "integration objective").stdout.strip()
+
+    run_cli(repo, "integrate", "--task", task_id)
+
+    tasks = [json.loads(line) for line in (repo / "codex" / "03_WORK" / "TASK_GRAPH.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    task = next(t for t in tasks if t["id"] == task_id)
+    assert task["status"] == "escalated"
+
+
+def test_integrate_requires_git_repository_context(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+    task_id = run_cli(repo, "add-task", "integration objective").stdout.strip()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "overseer", "--repo-root", str(repo), "integrate", "--task", task_id],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "Invalid git repository context" in result.stderr
+@pytest.mark.skipif(not HAS_RUNTIME_DEPS, reason="langgraph/langchain not installed in test environment")
+def test_nonzero_without_diff_progress_escalates_with_diagnosis_packet(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+    (repo / "codex.log").write_text("\n".join(f"line-{i}" for i in range(250)), encoding="utf-8")
+    task_id = run_cli(repo, "add-task", "force-nonzero-no-diff-progress").stdout.strip()
+
+    run_cli(repo, "run", "--task", task_id)
+
+    tasks = [json.loads(line) for line in (repo / "codex" / "03_WORK" / "TASK_GRAPH.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    task = next(t for t in tasks if t["id"] == task_id)
+    assert task["status"] == "escalated"
+    assert task["escalation_reason"] == "integrator exited non-zero twice without diff progress"
+    assert task["escalation_packet"]["last_exit_code"] == 1
+
+    queue = (repo / "codex" / "04_HUMAN_API" / "HUMAN_QUEUE.md").read_text(encoding="utf-8")
+    assert "DIAGNOSIS_PACKET:" in queue
+    assert "line-50" in queue
+
+
+@pytest.mark.skipif(not HAS_RUNTIME_DEPS, reason="langgraph/langchain not installed in test environment")
+def test_unchanged_diff_escalates_and_is_persisted_to_telemetry(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+    task_id = run_cli(repo, "add-task", "force-review-reject force-unchanged-diff").stdout.strip()
+
+    run_cli(repo, "run", "--task", task_id)
+
+    logs = [json.loads(line) for line in (repo / "codex" / "08_TELEMETRY" / "RUN_LOG.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    latest = logs[-1]
+    assert latest["status"] == "escalated"
+    assert latest["escalation_reason"] == "integrator diff unchanged across two attempts"
+    assert latest["escalation_packet"]["diff_summary"]["changed_files"] >= 0

@@ -15,8 +15,10 @@ class HumanAPI:
             self.codex_store.assert_write_allowed("overseer", self.queue_file)
             self.queue_file.write_text(EMPTY_HUMAN_QUEUE, encoding="utf-8")
 
-    def append_request(self, task: dict, reason: str) -> str:
+    def append_request(self, task: dict, reason: str, diagnosis_packet: dict | None = None) -> str:
         self.ensure_queue()
+        diagnosis_packet = diagnosis_packet or {}
+        diff_summary = diagnosis_packet.get("diff_summary", {})
         request = (
             "HUMAN_REQUEST:\n"
             "TYPE: decision\n"
@@ -31,6 +33,12 @@ class HumanAPI:
             f"  - Escalation trigger: {reason}\n"
             "  - Automated loop reached termination condition\n"
             f"UNBLOCKS: Task {task['id']} can proceed with clear decision\n"
+            "DIAGNOSIS_PACKET:\n"
+            f"  - last_exit_code: {diagnosis_packet.get('last_exit_code', 'unknown')}\n"
+            f"  - codex_log_tail_200: {diagnosis_packet.get('codex_log_tail', '(missing)')}\n"
+            f"  - git_status_short: {diagnosis_packet.get('git_status_short', '(missing)')}\n"
+            f"  - diff_changed_files: {diff_summary.get('changed_files', 0)}\n"
+            f"  - diff_stat: {diff_summary.get('stat', '(missing)')}\n"
             "REPLY_FORMAT: Reply with selected option and one-paragraph rationale\n"
         )
         self.codex_store.assert_write_allowed("overseer", self.queue_file)
