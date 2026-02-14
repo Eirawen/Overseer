@@ -14,19 +14,18 @@ def _services(repo_root: Path | None = None):
     codex_store = CodexStore(root)
     task_store = TaskStore(codex_store)
     human_api = HumanAPI(codex_store)
-    graph = OverseerGraph(codex_store, task_store, human_api)
-    return codex_store, task_store, human_api, graph
+    return codex_store, task_store, human_api
 
 
 def cmd_init(args: argparse.Namespace) -> int:
-    codex_store, _, _, _ = _services(Path(args.repo_root))
+    codex_store, _, _ = _services(Path(args.repo_root))
     codex_store.init_structure()
     print("Initialized codex scaffolding")
     return 0
 
 
 def cmd_add_task(args: argparse.Namespace) -> int:
-    codex_store, task_store, _, _ = _services(Path(args.repo_root))
+    codex_store, task_store, _ = _services(Path(args.repo_root))
     codex_store.init_structure()
     task = task_store.add_task(args.objective)
     print(task["id"])
@@ -34,15 +33,16 @@ def cmd_add_task(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    codex_store, _, _, graph = _services(Path(args.repo_root))
+    codex_store, task_store, human_api = _services(Path(args.repo_root))
     codex_store.init_structure()
+    graph = OverseerGraph(codex_store, task_store, human_api)
     result = graph.run_task(args.task)
     print(f"task={args.task} status={result['status']}")
     return 0
 
 
 def cmd_brief(args: argparse.Namespace) -> int:
-    codex_store, task_store, human_api, _ = _services(Path(args.repo_root))
+    codex_store, task_store, human_api = _services(Path(args.repo_root))
     codex_store.init_structure()
     tasks = task_store.load_tasks()
     queued = [task for task in tasks if task["status"] == "queued"]

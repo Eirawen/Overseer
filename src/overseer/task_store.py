@@ -57,6 +57,8 @@ class TaskStore:
         if updated is None:
             raise KeyError(f"Task not found: {task_id}")
 
+        # v0 uses full-file rewrite to keep a single authoritative TASK_GRAPH snapshot;
+        # migrate to append-only task events in a future iteration for stronger auditability.
         self.codex_store.assert_write_allowed("overseer", self.task_file)
         with self.task_file.open("w", encoding="utf-8") as handle:
             for task in tasks:

@@ -25,12 +25,13 @@ class _CompiledGraph:
                 conditional = self.graph.conditional[current]
                 current = conditional.routes[conditional.router(state)]
             else:
-                next_nodes = self.graph.edges.get(current, [END])
-                current = next_nodes[0] if next_nodes else END
+                current = self.graph.edges.get(current, [END])[0]
         return state
 
 
 class StateGraph:
+    """Local fallback if langgraph is unavailable in the execution environment."""
+
     def __init__(self, _state_type: Any) -> None:
         self.nodes: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {}
         self.edges: dict[str, list[str]] = {}

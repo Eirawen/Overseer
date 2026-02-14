@@ -3,19 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_HUMAN_REQUEST = """HUMAN_REQUEST:
-TYPE: decision
-URGENCY: medium
-TIME_REQUIRED_MIN: 15
-CONTEXT: Pending human escalation queue.
-OPTIONS:
-  - Accept recommendation
-  - Provide alternate direction
-RECOMMENDATION: Accept recommendation
-WHY:
-  - Maintains orchestration flow
-UNBLOCKS: Task execution can continue
-REPLY_FORMAT: Reply with chosen option and rationale
+EMPTY_HUMAN_QUEUE = """# Human Queue
+
+## Pending Requests
+
+- (empty)
 """
 
 
@@ -39,22 +31,6 @@ class CodexLayout:
             self.root / "11_WORKERS" / "verifier",
         ]
 
-    @property
-    def required_files(self) -> dict[Path, str]:
-        return {
-            self.root / "01_PROJECT" / "OPERATING_MODE.md": "# Operating Mode\n",
-            self.root / "02_MEMORY" / "DECISION_LOG.md": "# Decision Log\n",
-            self.root / "03_WORK" / "TASK_GRAPH.jsonl": "",
-            self.root / "04_HUMAN_API" / "REQUEST_SCHEMA.md": "# Human Request Schema\n",
-            self.root / "04_HUMAN_API" / "HUMAN_QUEUE.md": DEFAULT_HUMAN_REQUEST,
-            self.root / "05_AGENTS" / "TERMINATION.md": "# Termination Rules\n",
-            self.root / "08_TELEMETRY" / "RUN_LOG.jsonl": "",
-            self.root / "10_OVERSEER" / ".gitkeep": "",
-            self.root / "11_WORKERS" / "builder" / ".gitkeep": "",
-            self.root / "11_WORKERS" / "reviewer" / ".gitkeep": "",
-            self.root / "11_WORKERS" / "verifier" / ".gitkeep": "",
-        }
-
 
 class CodexStore:
     def __init__(self, repo_root: Path) -> None:
@@ -67,12 +43,38 @@ class CodexStore:
             raise FileNotFoundError("Missing required codex directory")
 
     def init_structure(self) -> None:
+        """Create missing structure only; never overwrite authored canonical docs."""
         self.ensure_codex_root()
         for directory in self.layout.required_dirs:
             directory.mkdir(parents=True, exist_ok=True)
-        for path, template in self.layout.required_files.items():
-            if not path.exists():
-                path.write_text(template, encoding="utf-8")
+
+        # Canonical numbered files are sourced from legacy authored docs if available.
+        self._ensure_from_existing("PROJECT/OPERATING_MODE.md", "01_PROJECT/OPERATING_MODE.md", "# Operating Mode\n")
+        self._ensure_from_existing("MEMORY/DECISION_LOG.md", "02_MEMORY/DECISION_LOG.md", "# Decision Log\n")
+        self._ensure_from_existing("HUMAN_API/REQUEST_SCHEMA.md", "04_HUMAN_API/REQUEST_SCHEMA.md", "# Human Request Schema\n")
+        self._ensure_from_existing("AGENTS/TERMINATION.md", "05_AGENTS/TERMINATION.md", "# Termination & Recursion Rules\n")
+
+        self._ensure_file("03_WORK/TASK_GRAPH.jsonl", "")
+        self._ensure_file("08_TELEMETRY/RUN_LOG.jsonl", "")
+        self._ensure_file("04_HUMAN_API/HUMAN_QUEUE.md", EMPTY_HUMAN_QUEUE)
+
+        self._ensure_file("10_OVERSEER/.gitkeep", "")
+        self._ensure_file("11_WORKERS/builder/.gitkeep", "")
+        self._ensure_file("11_WORKERS/reviewer/.gitkeep", "")
+        self._ensure_file("11_WORKERS/verifier/.gitkeep", "")
+
+    def _ensure_file(self, relative_path: str, content: str) -> None:
+        path = self.codex_root / relative_path
+        if not path.exists():
+            path.write_text(content, encoding="utf-8")
+
+    def _ensure_from_existing(self, source_rel: str, target_rel: str, fallback: str) -> None:
+        target = self.codex_root / target_rel
+        if target.exists():
+            return
+        source = self.codex_root / source_rel
+        content = source.read_text(encoding="utf-8") if source.exists() else fallback
+        target.write_text(content, encoding="utf-8")
 
     def assert_write_allowed(self, actor: str, target: Path) -> None:
         target = target.resolve()
@@ -92,13 +94,10 @@ class CodexStore:
 
         if str(target).startswith(str(telemetry_root)):
             return
-
         if actor == "overseer":
             return
-
         if str(target).startswith(str(workers_root / actor)):
             return
-
         if any(str(target).startswith(str(root)) for root in canonical_roots):
             raise PermissionError("Only overseer may write canonical codex files")
 

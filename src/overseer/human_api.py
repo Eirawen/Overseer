@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from overseer.codex_store import CodexStore
+from overseer.codex_store import CodexStore, EMPTY_HUMAN_QUEUE
 
 
 class HumanAPI:
@@ -13,7 +13,7 @@ class HumanAPI:
     def ensure_queue(self) -> None:
         if not self.queue_file.exists():
             self.codex_store.assert_write_allowed("overseer", self.queue_file)
-            self.queue_file.write_text("# Human Queue\n\n", encoding="utf-8")
+            self.queue_file.write_text(EMPTY_HUMAN_QUEUE, encoding="utf-8")
 
     def append_request(self, task: dict, reason: str) -> str:
         self.ensure_queue()
