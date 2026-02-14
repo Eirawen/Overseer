@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import json
-import subprocess
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -12,7 +10,6 @@ from langchain import __version__ as _langchain_version  # noqa: F401
 
 from overseer.codex_store import CodexStore
 from overseer.human_api import HumanAPI
-from overseer.integrators import CodexIntegrator, Integrator
 from overseer.task_store import TaskStore
 from overseer.termination import TerminationPolicy
 
@@ -29,31 +26,17 @@ class RunState(TypedDict, total=False):
     status: str
     escalation_reason: str
     decision: str
-    previous_attempt: dict[str, Any] | None
-    current_attempt: dict[str, Any]
-    escalation_packet: dict[str, Any]
 
 
 def _mock_builder_report(task: dict[str, Any], state: RunState) -> dict[str, Any]:
     objective = task["objective"]
     failing = 2 if "force-test-fail" in objective else 0
-    exit_code = 1 if "force-test-fail" in objective or "force-nonzero-no-diff-progress" in objective else 0
-    if "force-test-fail" in objective or "force-nonzero-no-diff-progress" in objective:
-        diff_content = ""
-    elif "force-unchanged-diff" in objective:
-        diff_content = "stable-diff"
-    else:
-        diff_content = f"update-{state.get('cycle_count', 0)}"
-    diff_present = bool(diff_content)
-    diff_hash = hashlib.sha256(diff_content.encode("utf-8")).hexdigest() if diff_present else ""
     previous = state.get("last_failing_tests")
     progress = previous is None or failing < previous
     return {
         "agent": "builder",
         "summary": "Builder execution complete",
-        "exit_code": exit_code,
         "tests": {"failing": failing},
-        "diff": {"present": diff_present, "hash": diff_hash},
         "progress": progress,
     }
 
@@ -77,77 +60,12 @@ def _mock_verifier_report(task: dict[str, Any], reviewer_report: dict[str, Any])
 
 
 class OverseerGraph:
-    # TODO: Read autonomy dial + merge policy from codex/01_PROJECT/OPERATING_MODE.md.
-    def __init__(
-        self,
-        codex_store: CodexStore,
-        task_store: TaskStore,
-        human_api: HumanAPI,
-        integrator: Integrator | None = None,
-    ) -> None:
+    def __init__(self, codex_store: CodexStore, task_store: TaskStore, human_api: HumanAPI) -> None:
         self.codex_store = codex_store
         self.task_store = task_store
         self.human_api = human_api
-        self.integrator = integrator or CodexIntegrator(codex_store.repo_root)
         self.policy = TerminationPolicy.from_codex(codex_store.codex_root)
         self.run_log_path = codex_store.codex_root / "08_TELEMETRY" / "RUN_LOG.jsonl"
-
-    def _record_integrate_attempt(self, state: RunState, report: dict[str, Any], attempt_number: int) -> None:
-        task_id = state["task"]["id"]
-        run_dir = self.codex_store.codex_root / "10_OVERSEER" / "runs" / task_id
-        self.codex_store.assert_write_allowed("overseer", run_dir / ".")
-        run_dir.mkdir(parents=True, exist_ok=True)
-
-        codex_log_path = run_dir / "codex.log"
-        meta_path = run_dir / "meta.json"
-        patch_path = run_dir / "patch.diff"
-
-        for path in (codex_log_path, meta_path, patch_path):
-            self.codex_store.assert_write_allowed("overseer", path)
-
-        worktree_path = self.codex_store.repo_root.resolve()
-        branch = "unknown"
-        branch_result = subprocess.run(
-            ["git", "-C", str(worktree_path), "branch", "--show-current"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if branch_result.returncode == 0:
-            branch = branch_result.stdout.strip() or "detached"
-
-        command_argv = ["codex", "integrate", "--task", task_id, "--attempt", str(attempt_number)]
-        exit_code = 0
-
-        diff_result = subprocess.run(
-            ["git", "-C", str(worktree_path), "diff"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        patch_path.write_text(diff_result.stdout, encoding="utf-8")
-
-        log_sections = [
-            "=== stdout ===",
-            report["summary"],
-            f"tests_failing={report['tests']['failing']}",
-            f"progress={report['progress']}",
-            "",
-            "=== stderr ===",
-        ]
-        if diff_result.returncode != 0:
-            log_sections.append(diff_result.stderr.strip())
-        codex_log_path.write_text("\n".join(log_sections).rstrip() + "\n", encoding="utf-8")
-
-        meta = {
-            "timestamp": datetime.now(UTC).isoformat(),
-            "command_argv": command_argv,
-            "exit_code": exit_code,
-            "worktree_path": str(worktree_path),
-            "branch": branch,
-            "attempt_number": attempt_number,
-        }
-        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
     def compile(self):
         workflow = StateGraph(RunState)
@@ -184,44 +102,10 @@ class OverseerGraph:
             "cycle_count": state.get("cycle_count", 0),
             "verifier_disputes": state.get("verifier_disputes", 0),
             "test_failures_without_progress": state.get("test_failures_without_progress", 0),
-            "previous_attempt": state.get("previous_attempt"),
-        }
-
-    def _build_diagnosis_packet(self, state: RunState) -> dict[str, Any]:
-        codex_log = self.codex_store.repo_root / "codex.log"
-        codex_tail = "(missing codex.log)"
-        if codex_log.exists():
-            lines = codex_log.read_text(encoding="utf-8", errors="replace").splitlines()
-            codex_tail = "\n".join(lines[-200:])
-
-        def _safe_git(*args: str) -> str:
-            result = subprocess.run(
-                ["git", *args],
-                cwd=self.codex_store.repo_root,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            output = (result.stdout or result.stderr).strip()
-            return output or "(empty)"
-
-        status_summary = _safe_git("status", "--short")
-        diff_stat = _safe_git("diff", "--stat")
-        diff_lines = [line for line in diff_stat.splitlines() if line.strip()]
-        changed_files = len([line for line in diff_lines if "|" in line])
-
-        return {
-            "last_exit_code": state["builder_report"]["exit_code"],
-            "codex_log_tail": codex_tail,
-            "git_status_short": status_summary,
-            "diff_summary": {
-                "changed_files": changed_files,
-                "stat": diff_stat,
-            },
         }
 
     def run_builder(self, state: RunState) -> RunState:
-        report = self.integrator.run_task({"role": "builder", "task": state["task"], "state": state})
+        report = _mock_builder_report(state["task"], state)
         self._write_worker_note("builder", state["task"]["id"], report["summary"])
 
         fail_count = report["tests"]["failing"]
@@ -236,22 +120,15 @@ class OverseerGraph:
             "builder_report": report,
             "last_failing_tests": fail_count,
             "test_failures_without_progress": no_progress_failures,
-            "current_attempt": {
-                "exit_code": report["exit_code"],
-                "diff_present": report["diff"]["present"],
-                "diff_hash": report["diff"]["hash"],
-            },
         }
 
     def run_reviewer(self, state: RunState) -> RunState:
-        report = self.integrator.run_task({"role": "reviewer", "task": state["task"], "state": state})
+        report = _mock_reviewer_report(state["task"], state)
         self._write_worker_note("reviewer", state["task"]["id"], report["summary"])
         return {**state, "reviewer_report": report}
 
     def run_verifier(self, state: RunState) -> RunState:
-        verifier = self.integrator.run_task(
-            {"role": "verifier", "task": state["task"], "state": state, "reviewer_report": state["reviewer_report"]}
-        )
+        verifier = _mock_verifier_report(state["task"], state["reviewer_report"])
         self._write_worker_note("verifier", state["task"]["id"], verifier["summary"])
 
         disputes = state.get("verifier_disputes", 0)
@@ -263,42 +140,10 @@ class OverseerGraph:
         cycle_count = state.get("cycle_count", 0) + 1
         state = {**state, "cycle_count": cycle_count}
 
-        prev_attempt = state.get("previous_attempt")
-        current_attempt = state["current_attempt"]
-
-        no_diff_progress = bool(
-            prev_attempt
-            and prev_attempt["exit_code"] != 0
-            and current_attempt["exit_code"] != 0
-            and prev_attempt["diff_present"] == current_attempt["diff_present"]
-            and prev_attempt["diff_hash"] == current_attempt["diff_hash"]
-        )
-        unchanged_diff = bool(
-            prev_attempt
-            and prev_attempt["diff_present"] == current_attempt["diff_present"]
-            and prev_attempt["diff_hash"] == current_attempt["diff_hash"]
-        )
-
         if state["verifier_disputes"] >= self.policy.max_verifier_disputes:
             return {**state, "decision": "escalate", "status": "escalated", "escalation_reason": "reviewer/verifier disagreement threshold reached"}
         if state["test_failures_without_progress"] >= self.policy.max_test_failures_without_progress:
             return {**state, "decision": "escalate", "status": "escalated", "escalation_reason": "tests failed twice without progress"}
-        if no_diff_progress:
-            return {
-                **state,
-                "decision": "escalate",
-                "status": "escalated",
-                "escalation_reason": "integrator exited non-zero twice without diff progress",
-                "escalation_packet": self._build_diagnosis_packet(state),
-            }
-        if unchanged_diff:
-            return {
-                **state,
-                "decision": "escalate",
-                "status": "escalated",
-                "escalation_reason": "integrator diff unchanged across two attempts",
-                "escalation_packet": self._build_diagnosis_packet(state),
-            }
         if cycle_count >= self.policy.max_review_cycles:
             return {**state, "decision": "escalate", "status": "escalated", "escalation_reason": "max review cycles reached"}
 
@@ -306,29 +151,19 @@ class OverseerGraph:
         approved = state["reviewer_report"]["approved"] and state["verifier_report"]["approved"]
         if tests_ok and approved:
             return {**state, "decision": "merge", "status": "done"}
-        return {**state, "decision": "continue", "status": "running", "previous_attempt": current_attempt}
+        return {**state, "decision": "continue", "status": "running"}
 
     def update_codex(self, state: RunState) -> RunState:
-        escalation_packet = state.get("escalation_packet") if state["status"] == "escalated" else None
-        task = self.task_store.update_status(
-            state["task"]["id"],
-            state["status"],
-            escalation_reason=state.get("escalation_reason"),
-            escalated=state["status"] == "escalated",
-            escalation_packet=escalation_packet,
-        )
+        task = self.task_store.update_status(state["task"]["id"], state["status"])
         if state["status"] == "escalated":
-            self.human_api.append_request(task, state["escalation_reason"], escalation_packet)
+            self.human_api.append_request(task, state["escalation_reason"])
 
         entry = {
             "task_id": task["id"],
             "status": state["status"],
             "cycle_count": state["cycle_count"],
             "verifier_disputes": state["verifier_disputes"],
-            "escalated": state["status"] == "escalated",
-            "escalation_reason": state.get("escalation_reason"),
-            "escalation_packet": escalation_packet,
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "reports": {
                 "builder": state["builder_report"],
                 "reviewer": state["reviewer_report"],

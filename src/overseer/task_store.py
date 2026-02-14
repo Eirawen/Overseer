@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -18,7 +18,7 @@ class TaskStore:
             "id": f"task-{uuid4().hex[:12]}",
             "objective": objective,
             "status": "queued",
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
         self._append_task(task)
         return task
@@ -52,7 +52,7 @@ class TaskStore:
             if task["id"] == task_id:
                 task["status"] = status
                 task.update(extra_fields)
-                task["updated_at"] = datetime.now(UTC).isoformat()
+                task["updated_at"] = datetime.now(timezone.utc).isoformat()
                 updated = task
                 break
         if updated is None:
