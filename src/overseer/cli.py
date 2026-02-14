@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
-import json
-from datetime import datetime, timezone
 from pathlib import Path
 
 from overseer.codex_store import CodexStore
 from overseer.human_api import HumanAPI
 from overseer.integrators import CodexIntegrator
 from overseer.task_store import TaskStore
+from overseer.termination import TerminationPolicy
 
 
 def _services(repo_root: Path | None = None):
@@ -40,8 +38,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     codex_store.init_structure()
     from overseer.graph import OverseerGraph
 
-    integrator = CodexIntegrator(codex_store.repo_root)
-    graph = OverseerGraph(codex_store, task_store, human_api, integrator=integrator)
+    graph = OverseerGraph(codex_store, task_store, human_api)
     result = graph.run_task(args.task)
     print(f"task={args.task} status={result['status']}")
     return 0
@@ -57,90 +54,17 @@ def cmd_brief(args: argparse.Namespace) -> int:
     return 0
 
 
-def _validate_git_repository_context(repo_root: Path) -> None:
-    try:
-        subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "--is-inside-work-tree"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
-        raise RuntimeError(f"Invalid git repository context: {repo_root}") from exc
-
-
 def cmd_integrate(args: argparse.Namespace) -> int:
-    repo_root = Path(args.repo_root)
-    codex_store, task_store, _ = _services(repo_root)
+    codex_store, task_store, human_api = _services(Path(args.repo_root))
     codex_store.init_structure()
-    _validate_git_repository_context(repo_root)
-
-    from overseer.integrator import CodexIntegrator
+    policy = TerminationPolicy.from_codex(codex_store.codex_root)
+    integrator = CodexIntegrator(codex_store.repo_root, task_store=task_store, human_api=human_api, policy=policy)
 
     task_store.update_status(args.task, "running")
-    integrator = CodexIntegrator(repo_root=repo_root, codex_store=codex_store, task_store=task_store)
-
-    try:
-        result = integrator.run_task(args.task)
-    except Exception:
-        task_store.update_status(args.task, "escalated")
-        raise
-
-    if isinstance(result, dict):
-        diff = str(result.get("diff", ""))
-        failed = bool(result.get("escalated")) or result.get("status") == "escalated" or result.get("success") is False
-    else:
-        diff = str(result)
-        failed = False
-
-    next_status = "awaiting_review" if (not failed and diff.strip()) else "escalated"
-    task_store.update_status(args.task, next_status)
-    print(f"task={args.task} status={next_status}")
+    task = task_store.get_task(args.task)
+    result = integrator.run_task(task)
+    print(f"task={args.task} status={result['status']}")
     return 0
-def _append_integrator_telemetry(
-    codex_store: CodexStore,
-    task_id: str,
-    attempt_number: int,
-    exit_code: int,
-    patch_diff_path: Path,
-    diagnostics: dict[str, str] | None = None,
-) -> None:
-    run_log_path = codex_store.codex_root / "08_TELEMETRY" / "RUN_LOG.jsonl"
-    diff_present = patch_diff_path.exists() and bool(patch_diff_path.read_text(encoding="utf-8").strip())
-
-    entry: dict[str, object] = {
-        "phase": "integrator",
-        "task_id": task_id,
-        "attempt_number": attempt_number,
-        "exit_code": exit_code,
-        "diff_present": diff_present,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-    if diagnostics:
-        entry["diagnostics"] = diagnostics
-
-    codex_store.assert_write_allowed("overseer", run_log_path)
-    with run_log_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry) + "\n")
-
-
-def cmd_integrate(args: argparse.Namespace) -> int:
-    codex_store, _, _ = _services(Path(args.repo_root))
-    codex_store.init_structure()
-
-    diagnostics: dict[str, str] = {}
-    if args.note:
-        diagnostics["note"] = args.note
-
-    _append_integrator_telemetry(
-        codex_store=codex_store,
-        task_id=args.task,
-        attempt_number=args.attempt_number,
-        exit_code=args.exit_code,
-        patch_diff_path=Path(args.patch_diff),
-        diagnostics=diagnostics or None,
-    )
-    return args.exit_code
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -164,10 +88,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     integrate_parser = subparsers.add_parser("integrate")
     integrate_parser.add_argument("--task", required=True)
-    integrate_parser.add_argument("--attempt-number", type=int, required=True)
-    integrate_parser.add_argument("--exit-code", type=int, required=True)
-    integrate_parser.add_argument("--patch-diff", default="patch.diff")
-    integrate_parser.add_argument("--note")
     integrate_parser.set_defaults(func=cmd_integrate)
     return parser
 
