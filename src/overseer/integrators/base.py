@@ -1,8 +1,29 @@
 from __future__ import annotations
 
-from typing import Any, Protocol
+from dataclasses import dataclass
+from typing import Literal, Protocol
+
+RunState = Literal["queued", "running", "done", "failed", "canceled"]
 
 
-class Integrator(Protocol):
-    def run_task(self, task: dict[str, Any]) -> dict[str, Any]:
-        ...
+@dataclass(frozen=True)
+class RunRequest:
+    task_id: str
+    objective: str
+
+
+@dataclass(frozen=True)
+class RunResult:
+    run_id: str
+    task_id: str
+    status: RunState
+    exit_code: int | None = None
+    error: str | None = None
+
+
+class BaseIntegrator(Protocol):
+    def submit(self, request: RunRequest) -> str: ...
+
+    def status(self, run_id: str) -> RunResult: ...
+
+    def runs(self) -> list[RunResult]: ...
