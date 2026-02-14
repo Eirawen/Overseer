@@ -5,6 +5,7 @@ from pathlib import Path
 
 from overseer.codex_store import CodexStore
 from overseer.human_api import HumanAPI
+from overseer.integrators import CodexIntegrator
 from overseer.task_store import TaskStore
 
 
@@ -36,7 +37,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     codex_store.init_structure()
     from overseer.graph import OverseerGraph
 
-    graph = OverseerGraph(codex_store, task_store, human_api)
+    integrator = CodexIntegrator(codex_store.repo_root)
+    graph = OverseerGraph(codex_store, task_store, human_api, integrator=integrator)
     result = graph.run_task(args.task)
     print(f"task={args.task} status={result['status']}")
     return 0
