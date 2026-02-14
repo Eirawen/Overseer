@@ -11,9 +11,12 @@ from pathlib import Path
 from typing import Literal, Protocol
 from uuid import uuid4
 
+from overseer.fs import atomic_write_text, test_delay_meta_after_read
 from overseer.locks import file_lock
 
 RunStatus = Literal["queued", "running", "done", "failed", "canceled"]
+
+TERMINAL_STATUSES: frozenset[str] = frozenset({"done", "failed", "canceled"})
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,9 @@ class LocalBackend:
     def new_run_id() -> str:
         return f"run-{uuid4().hex[:12]}"
 
+    def _meta_lock_path(self, meta_path: Path) -> Path:
+        return meta_path.parent / "meta.lock"
+
     def submit(self, request: ExecutionRequest) -> str:
         request.stdout_log.parent.mkdir(parents=True, exist_ok=True)
         request.stderr_log.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +87,8 @@ class LocalBackend:
             lock_path=str(request.lock_path),
             created_at=datetime.now(timezone.utc).isoformat(),
         )
-        self._write_record(request.meta_path, record)
+        with file_lock(self._meta_lock_path(request.meta_path)):
+            self._write_record(request.meta_path, record)
 
         worker_command = [
             sys.executable,
@@ -97,7 +104,8 @@ class LocalBackend:
             worker_command, cwd=request.cwd, env=env, start_new_session=True
         )  # noqa: S603
         record.worker_pid = process.pid
-        self._write_record(request.meta_path, record)
+        with file_lock(self._meta_lock_path(request.meta_path)):
+            self._write_record(request.meta_path, record)
         return request.run_id
 
     def status(self, run_id: str) -> ExecutionRecord:
@@ -111,26 +119,31 @@ class LocalBackend:
 
     def cancel(self, run_id: str) -> ExecutionRecord:
         meta_path = self.runs_root / run_id / "meta.json"
-        record = self._read_record(meta_path)
-        if record.status in {"done", "failed", "canceled"}:
+        with file_lock(self._meta_lock_path(meta_path)):
+            record = self._read_record(meta_path)
+            test_delay_meta_after_read()
+            if record.status in TERMINAL_STATUSES:
+                return record
+            if record.worker_pid is not None:
+                try:
+                    os.kill(record.worker_pid, signal.SIGTERM)
+                except OSError:
+                    pass
+            record.status = "canceled"
+            record.ended_at = datetime.now(timezone.utc).isoformat()
+            self._write_record(meta_path, record)
             return record
-        if record.worker_pid is not None:
-            try:
-                os.kill(record.worker_pid, signal.SIGTERM)
-            except OSError:
-                pass
-        record.status = "canceled"
-        record.ended_at = datetime.now(timezone.utc).isoformat()
-        self._write_record(meta_path, record)
-        return record
 
     def run_worker(self, meta_path: Path) -> int:
-        record = self._read_record(meta_path)
-        if record.status == "canceled":
-            return 1
-        record.status = "running"
-        record.started_at = datetime.now(timezone.utc).isoformat()
-        self._write_record(meta_path, record)
+        meta_path = Path(meta_path)
+        with file_lock(self._meta_lock_path(meta_path)):
+            record = self._read_record(meta_path)
+            test_delay_meta_after_read()
+            if record.status == "canceled":
+                return 1
+            record.status = "running"
+            record.started_at = datetime.now(timezone.utc).isoformat()
+            self._write_record(meta_path, record)
 
         with file_lock(Path(record.lock_path)):
             with (
@@ -146,16 +159,19 @@ class LocalBackend:
                     check=False,
                 )
 
-        record.ended_at = datetime.now(timezone.utc).isoformat()
-        record.exit_code = result.returncode
-        if record.status != "canceled":
-            record.status = "done" if result.returncode == 0 else "failed"
-        self._write_record(meta_path, record)
+        with file_lock(self._meta_lock_path(meta_path)):
+            record = self._read_record(meta_path)
+            test_delay_meta_after_read()
+            record.ended_at = datetime.now(timezone.utc).isoformat()
+            record.exit_code = result.returncode
+            if record.status not in TERMINAL_STATUSES:
+                record.status = "done" if result.returncode == 0 else "failed"
+            self._write_record(meta_path, record)
         return result.returncode
 
     def _write_record(self, path: Path, record: ExecutionRecord) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(asdict(record), indent=2) + "\n", encoding="utf-8")
+        text = json.dumps(asdict(record), indent=2) + "\n"
+        atomic_write_text(path, text)
 
     def _read_record(self, path: Path) -> ExecutionRecord:
         payload = json.loads(path.read_text(encoding="utf-8"))

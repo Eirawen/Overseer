@@ -4,6 +4,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from overseer.locks import file_lock
+
 
 class GitRepoError(RuntimeError):
     pass
@@ -39,9 +41,14 @@ class GitWorktreeManager:
     def create_for_run(self, task_id: str, run_id: str) -> WorktreeHandle:
         branch_name = f"overseer/{task_id}/{run_id}"
         path = self.codex_root / "10_OVERSEER" / "worktrees" / run_id
-        lock_path = self.codex_root / "10_OVERSEER" / "locks" / f"{task_id}.lock"
+        run_lock_path = self.codex_root / "10_OVERSEER" / "locks" / f"{run_id}.lock"
+        git_worktree_lock = self.codex_root / "10_OVERSEER" / "locks" / "git_worktree.lock"
         path.parent.mkdir(parents=True, exist_ok=True)
-        if not path.exists():
+        with file_lock(git_worktree_lock):
+            if path.exists():
+                raise GitRepoError(
+                    f"Worktree path already exists for run_id={run_id}; use a new run id."
+                )
             result = subprocess.run(
                 ["git", "worktree", "add", "-b", branch_name, str(path), "HEAD"],
                 cwd=self.repo_root,
@@ -52,7 +59,11 @@ class GitWorktreeManager:
             if result.returncode != 0:
                 raise GitRepoError(f"Failed to create worktree: {result.stderr.strip()}")
         return WorktreeHandle(
-            run_id=run_id, task_id=task_id, branch_name=branch_name, path=path, lock_path=lock_path
+            run_id=run_id,
+            task_id=task_id,
+            branch_name=branch_name,
+            path=path,
+            lock_path=run_lock_path,
         )
 
     def cleanup(self, handle: WorktreeHandle) -> None:

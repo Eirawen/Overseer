@@ -10,6 +10,7 @@ from langchain import __version__ as _langchain_version  # noqa: F401
 
 from overseer.codex_store import CodexStore
 from overseer.human_api import HumanAPI
+from overseer.locks import file_lock
 from overseer.task_store import TaskStore
 from overseer.termination import TerminationPolicy
 
@@ -66,6 +67,7 @@ class OverseerGraph:
         self.human_api = human_api
         self.policy = TerminationPolicy.from_codex(codex_store.codex_root)
         self.run_log_path = codex_store.codex_root / "08_TELEMETRY" / "RUN_LOG.jsonl"
+        self._run_log_lock = codex_store.codex_root / "10_OVERSEER" / "locks" / "run_log.lock"
 
     def compile(self):
         workflow = StateGraph(RunState)
@@ -171,8 +173,9 @@ class OverseerGraph:
             },
         }
         self.codex_store.assert_write_allowed("overseer", self.run_log_path)
-        with self.run_log_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(entry) + "\n")
+        with file_lock(self._run_log_lock):
+            with self.run_log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry) + "\n")
         return {**state, "task": task}
 
     def run_task(self, task_id: str) -> dict[str, Any]:

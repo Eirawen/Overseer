@@ -3,12 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from overseer.codex_store import CodexStore, EMPTY_HUMAN_QUEUE
+from overseer.locks import file_lock
 
 
 class HumanAPI:
     def __init__(self, codex_store: CodexStore) -> None:
         self.codex_store = codex_store
         self.queue_file = codex_store.codex_root / "04_HUMAN_API" / "HUMAN_QUEUE.md"
+        self._queue_lock = codex_store.codex_root / "10_OVERSEER" / "locks" / "human_queue.lock"
 
     def ensure_queue(self) -> None:
         if not self.queue_file.exists():
@@ -42,8 +44,9 @@ class HumanAPI:
             "REPLY_FORMAT: Reply with selected option and one-paragraph rationale\n"
         )
         self.codex_store.assert_write_allowed("overseer", self.queue_file)
-        with self.queue_file.open("a", encoding="utf-8") as handle:
-            handle.write("\n" + request + "\n")
+        with file_lock(self._queue_lock):
+            with self.queue_file.open("a", encoding="utf-8") as handle:
+                handle.write("\n" + request + "\n")
         return request
 
     def generate_brief(self, queued_tasks: list[dict], escalated_tasks: list[dict]) -> str:

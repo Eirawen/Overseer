@@ -104,3 +104,40 @@ def test_requires_git_repository_context(tmp_path: Path) -> None:
     result = run_cli(repo, "init", check=False)
     assert result.returncode != 0
     assert "Not inside a git repository" in result.stderr
+
+
+def test_init_prints_message(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    init_git_repo(repo)
+    (repo / "codex").mkdir(parents=True)
+    result = run_cli(repo, "init")
+    assert result.returncode == 0
+    assert "Initialized" in result.stdout or "initialized" in result.stdout.lower()
+
+
+def test_add_task_prints_task_id(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    init_git_repo(repo)
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+    result = run_cli(repo, "add-task", "my objective")
+    assert result.returncode == 0
+    task_id = result.stdout.strip()
+    assert task_id.startswith("task-")
+    assert len(task_id) == 17  # task- (5) + 12 hex
+
+
+def test_brief_prints_queued_and_escalated(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    init_git_repo(repo)
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+    run_cli(repo, "add-task", "first")
+    run_cli(repo, "add-task", "second")
+    result = run_cli(repo, "brief")
+    assert result.returncode == 0
+    assert "queued" in result.stdout.lower()
+    assert "2" in result.stdout or "escalated" in result.stdout.lower()
