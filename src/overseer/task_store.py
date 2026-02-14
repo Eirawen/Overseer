@@ -45,12 +45,13 @@ class TaskStore:
                 return task
         raise KeyError(f"Task not found: {task_id}")
 
-    def update_status(self, task_id: str, status: str) -> dict:
+    def update_status(self, task_id: str, status: str, **extra_fields: object) -> dict:
         tasks = self.load_tasks()
         updated: dict | None = None
         for task in tasks:
             if task["id"] == task_id:
                 task["status"] = status
+                task.update(extra_fields)
                 task["updated_at"] = datetime.now(UTC).isoformat()
                 updated = task
                 break
