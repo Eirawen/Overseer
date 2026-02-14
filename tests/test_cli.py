@@ -118,6 +118,30 @@ def test_disagreement_escalates_after_two_disputes(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not HAS_RUNTIME_DEPS, reason="langgraph/langchain not installed in test environment")
+def test_run_records_integrate_attempt_artifacts(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+    task_id = run_cli(repo, "add-task", "normal objective").stdout.strip()
+
+    run_cli(repo, "run", "--task", task_id)
+
+    run_dir = repo / "codex" / "10_OVERSEER" / "runs" / task_id
+    codex_log = run_dir / "codex.log"
+    meta = run_dir / "meta.json"
+    patch = run_dir / "patch.diff"
+
+    assert codex_log.exists()
+    assert meta.exists()
+    assert patch.exists()
+
+    payload = json.loads(meta.read_text(encoding="utf-8"))
+    assert payload["attempt_number"] == 1
+    assert payload["exit_code"] == 0
+    assert payload["command_argv"][:2] == ["codex", "integrate"]
+
+
+@pytest.mark.skipif(not HAS_RUNTIME_DEPS, reason="langgraph/langchain not installed in test environment")
 def test_termination_policy_is_loaded_from_codex_file(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / "codex").mkdir(parents=True)
