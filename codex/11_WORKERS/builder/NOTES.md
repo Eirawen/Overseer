@@ -8,3 +8,9 @@
 - [2026-02-17T00:30:00Z] Refined cancellation semantics to preserve an observable `canceling` phase for active runs, prevent canceled runs from being reclassified as failed by notes enforcement, and fix worker completion logic that could overwrite canceled with failed.
   - Why: align behavior with requested cancellation state machine and ensure final status consistency under run/worker races.
   - How to test: `pytest -q tests/test_backend.py tests/test_concurrency.py tests/test_cli.py tests/test_run_events.py` and `pytest -q`
+- [2026-02-17T12:15:00Z] Productized CLI chat loop with non-blocking status stream thread, slash-command surface (`/run`, `/queue`, `/open`, `/quit`), and conversation rolling summaries under telemetry conversations.
+  - Why: make Overseer chat usable as the primary interface while runs execute asynchronously and Human Queue actions remain available without leaving chat.
+  - How to test: `pytest -q tests/test_chat_commands.py tests/test_chat_server.py tests/test_cli.py`
+- [2026-02-17T13:00:00Z] Hardened chat command execution by persisting user command transcript entries, replacing argparse-based `/queue resolve` parsing with non-exiting validation, and making CLI chat recover from invalid command input without terminating.
+  - Why: previous behavior could drop command transcript context and terminate the chat loop on malformed slash commands.
+  - How to test: `pytest -q tests/test_chat_commands.py tests/test_chat_server.py tests/test_cli.py`

@@ -297,3 +297,57 @@ def test_human_resolve_rejects_invalid_choice(tmp_path: Path) -> None:
     )
     assert bad_resolve.returncode != 0
     assert "choice must be one of" in bad_resolve.stderr
+
+
+def test_chat_accepts_commands_while_run_active(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    init_git_repo(repo)
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+
+    bin_dir = tmp_path / "bin"
+    _fake_codex_script(bin_dir, 'sleep 2\necho "ok"')
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "overseer", "--repo-root", str(repo), "chat"],
+        cwd=Path(__file__).resolve().parents[1],
+        input="ship objective\n/run list\n/quit\n",
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+        timeout=15,
+    )
+
+    assert proc.returncode == 0
+    assert "Overseer chat started" in proc.stdout
+    assert "Run IDs:" in proc.stdout
+    assert "status=" in proc.stdout
+    assert "Session ended." in proc.stdout
+
+
+def test_chat_reports_command_errors_and_continues(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    init_git_repo(repo)
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "overseer", "--repo-root", str(repo), "chat"],
+        cwd=Path(__file__).resolve().parents[1],
+        input="/run status\n/quit\n",
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+        timeout=15,
+    )
+
+    assert proc.returncode == 0
+    assert "error: usage: /run" in proc.stdout
+    assert "Session ended." in proc.stdout

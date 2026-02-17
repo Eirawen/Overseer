@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import queue
+import threading
 from pathlib import Path
 
 from overseer.codex_store import CodexStore
@@ -11,6 +13,22 @@ from overseer.git_worktree import GitRepoError, resolve_git_root
 from overseer.human_api import HumanAPI
 from overseer.integrators import CodexIntegrator, RunRequest
 from overseer.task_store import TaskStore
+
+
+def _print_event_stream(service: OverseerChatService, stop: threading.Event) -> None:
+    sub = service.events.subscribe()
+    try:
+        while not stop.is_set():
+            try:
+                event = sub.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if event.get("type") == "run_status":
+                print(f"[status] {event['run_id']} task={event['task_id']} status={event['status']}")
+            elif event.get("type") == "human_escalation":
+                print(f"[queue] human escalations pending={event['count']}")
+    finally:
+        service.events.unsubscribe(sub)
 
 
 def _services(repo_root: Path | None = None):
@@ -148,6 +166,42 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chat(args: argparse.Namespace) -> int:
+    codex_store, task_store, human_api, _ = _services(Path(args.repo_root))
+    codex_store.init_structure()
+    integrator = _build_integrator(codex_store.repo_root)
+    service = OverseerChatService(codex_store, task_store, integrator, human_api)
+    service.start()
+    stop = threading.Event()
+    printer = threading.Thread(target=_print_event_stream, args=(service, stop), daemon=True)
+    printer.start()
+    print("Overseer chat started. Use /run, /queue, /open, /quit.")
+    try:
+        while True:
+            try:
+                raw = input("overseer> ").strip()
+            except EOFError:
+                print("Session ended.")
+                break
+            if not raw:
+                continue
+            try:
+                if raw.startswith("/"):
+                    out = service.handle_command(raw)
+                else:
+                    out = service.handle_message(raw)
+                print(out["assistant_text"])
+                if out.get("exit"):
+                    break
+            except ValueError as exc:
+                print(f"error: {exc}")
+    finally:
+        stop.set()
+        printer.join(timeout=1)
+        service.stop()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="overseer")
     parser.add_argument("--repo-root", default=".")
@@ -211,6 +265,9 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--host", default="127.0.0.1")
     serve_parser.add_argument("--port", type=int, default=8765)
     serve_parser.set_defaults(func=cmd_serve)
+
+    chat_parser = subparsers.add_parser("chat")
+    chat_parser.set_defaults(func=cmd_chat)
 
     return parser
 

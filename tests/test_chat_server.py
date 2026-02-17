@@ -13,7 +13,7 @@ from urllib.error import HTTPError
 
 import pytest
 
-from overseer.chat_server import OverseerChatService, build_server, serve_chat
+from overseer.chat_server import OverseerChatService, _parse_queue_resolve_args, build_server, serve_chat
 from overseer.codex_store import CodexStore
 from overseer.execution.backend import ExecutionRecord, LocalBackend
 from overseer.human_api import HumanAPI
@@ -154,6 +154,27 @@ def test_message_writes_conversation_log_and_run_details(tmp_path: Path, monkeyp
         lines = [json.loads(line) for line in conversation_files[-1].read_text(encoding="utf-8").splitlines()]
         assert [entry["role"] for entry in lines[-2:]] == ["human", "assistant"]
         assert lines[-1]["payload"]["created_run_ids"] == [run_id]
+
+        summary_files = sorted((store.codex_root / "08_TELEMETRY" / "conversations").glob("*.summary.json"))
+        assert summary_files
+        summary = json.loads(summary_files[-1].read_text(encoding="utf-8"))
+        assert summary[-1]["run_ids"] == [run_id]
+    finally:
+        server.shutdown()
+        service.stop()
+
+
+def test_chat_commands_work_while_run_is_active(tmp_path: Path, monkeypatch) -> None:
+    service, server, _, _ = _setup_service(tmp_path, monkeypatch, "sleep 2\necho done")
+    try:
+        started = service.handle_message("run this objective")
+        run_id = started["created_run_ids"][0]
+        listed = service.handle_command("/run list")
+        assert run_id in listed["assistant_text"]
+
+        opened = service.handle_command(f"/open {run_id}")
+        assert "worktree=" in opened["assistant_text"]
+        assert "events=" in opened["assistant_text"]
     finally:
         server.shutdown()
         service.stop()
@@ -224,3 +245,23 @@ def test_notes_enforcement_escalates_when_missing(tmp_path: Path) -> None:
     assert updated.status == "failed"
     queue = (store.codex_root / "04_HUMAN_API" / "HUMAN_QUEUE.md").read_text(encoding="utf-8")
     assert "missing required notes" in queue
+
+
+def test_queue_resolve_args_parser_rejects_unknown_flag() -> None:
+    with pytest.raises(ValueError, match="unknown queue resolve flag"):
+        _parse_queue_resolve_args(("hr-123", "--bogus", "x"))
+
+
+def test_command_messages_are_persisted_in_conversation(tmp_path: Path, monkeypatch) -> None:
+    service, server, _, store = _setup_service(tmp_path, monkeypatch)
+    try:
+        service.handle_command("/run list")
+        conversation_files = sorted((store.codex_root / "08_TELEMETRY" / "conversations").glob("*.jsonl"))
+        assert conversation_files
+        lines = [json.loads(line) for line in conversation_files[-1].read_text(encoding="utf-8").splitlines()]
+        assert lines[-2]["role"] == "human"
+        assert lines[-2]["text"] == "/run list"
+        assert lines[-1]["role"] == "assistant"
+    finally:
+        server.shutdown()
+        service.stop()

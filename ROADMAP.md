@@ -143,18 +143,21 @@ Goal: chat loop exists, doesn’t block, and can spawn runs + report status.
   - [ ] Run reference stored + can be displayed
 
 #### M1.2 Non-blocking run spawning from chat
-- [ ] Chat command surface (initial):
-  - [ ] “run <task_id> …” or “do <objective>”
-  - [ ] “status <run_id>”
-  - [ ] “tail <run_id>”
+- [x] Chat command surface (initial):
+  - [x] “run <task_id> …” or “do <objective>”
+  - [x] “status <run_id>”
+  - [x] “tail <run_id>” (via `/open <run_id>` path pointers to logs/events)
   - [x] “cancel <run_id>”
+  - [x] “/queue list” and “/queue resolve” for Human Queue management
 - [ ] Implementation:
-  - [ ] Chat handler calls execution backend to submit run
-  - [ ] Returns immediately with run_id
-  - [ ] Background polling or event subscription updates chat with run progress
-- [ ] Tests:
-  - [ ] Submitting from chat returns immediately
-  - [ ] Status updates appear without blocking input handling
+  - [x] Chat handler calls execution backend to submit run
+  - [x] Returns immediately with run_id
+  - [x] Background polling or event subscription updates chat with run progress
+- [x] Tests:
+  - [x] Submitting from chat returns immediately
+  - [x] Status updates appear without blocking input handling
+  - [x] Command parsing unit tests for `/run`, `/queue`, and `/open`
+  - [x] CLI chat command errors are surfaced without terminating session
 
 #### M1.3 Escalation -> Human Queue loop is tight
 - [ ] When escalated:
@@ -320,7 +323,7 @@ Goal: prove it works on a real repo and real workflow.
 
 1) [ ] **Write/refresh `ROADMAP.md` (this file) into repo and link it from README**
 2) [ ] **Worker notes enforcement** (policy + minimal enforcement + prompt header)
-3) [ ] **M1.2 Non-blocking spawn from chat** (prove async loop works end-to-end)
+3) [x] **M1.2 Non-blocking spawn from chat** (prove async loop works end-to-end)
 4) [ ] **M2 UI shell decision + skeleton UI** (chat + queue panes with stub data)
 5) [ ] **Codex auth/permission preflight handling** (robust dev experience)
 
