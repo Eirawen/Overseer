@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 
 from overseer.codex_store import CodexStore
-from overseer.chat_server import OverseerChatService, serve_chat
+from overseer.chat_server import OverseerChatService
 from overseer.execution.backend import LocalBackend
 from overseer.git_worktree import GitRepoError, resolve_git_root
 from overseer.human_api import HumanAPI
@@ -158,11 +158,13 @@ def cmd_human_resolve(args: argparse.Namespace) -> int:
     return 0
 
 def cmd_serve(args: argparse.Namespace) -> int:
-    codex_store, task_store, human_api, _ = _services(Path(args.repo_root))
+    codex_store, _, human_api, backend = _services(Path(args.repo_root))
     codex_store.init_structure()
     integrator = _build_integrator(codex_store.repo_root)
-    service = OverseerChatService(codex_store, task_store, integrator, human_api)
-    serve_chat(service, host=args.host, port=args.port)
+    from overseer.daemon_api import OverseerDaemon, serve_daemon
+
+    daemon = OverseerDaemon(backend=backend, integrator=integrator, human_api=human_api)
+    serve_daemon(daemon, host=args.host, port=args.port)
     return 0
 
 
