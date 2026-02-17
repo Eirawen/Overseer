@@ -108,6 +108,37 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     return cmd_run_agent(args)
 
 
+
+def cmd_human_list(args: argparse.Namespace) -> int:
+    _, _, human_api, _ = _services(Path(args.repo_root))
+    for request in human_api.list_requests():
+        print(
+            f"{request.request_id} status={request.status} type={request.request_type} "
+            f"urgency={request.urgency} task={request.task_id or '-'} run={request.run_id or '-'}"
+        )
+    return 0
+
+
+def cmd_human_show(args: argparse.Namespace) -> int:
+    _, _, human_api, _ = _services(Path(args.repo_root))
+    request = human_api.show_request(args.id)
+    print(request.request_path.read_text(encoding="utf-8"))
+    if request.resolution_path is not None:
+        print(request.resolution_path.read_text(encoding="utf-8"))
+    return 0
+
+
+def cmd_human_resolve(args: argparse.Namespace) -> int:
+    _, _, human_api, _ = _services(Path(args.repo_root))
+    resolution_path = human_api.resolve_request(
+        request_id=args.id,
+        choice=args.choice,
+        rationale=args.rationale,
+        artifact_path=args.artifact_path,
+    )
+    print(f"resolved {args.id} -> {resolution_path}")
+    return 0
+
 def cmd_serve(args: argparse.Namespace) -> int:
     codex_store, task_store, human_api, _ = _services(Path(args.repo_root))
     codex_store.init_structure()
@@ -155,6 +186,23 @@ def build_parser() -> argparse.ArgumentParser:
     run_cancel_parser.add_argument("--run", required=True)
     run_cancel_parser.set_defaults(func=cmd_run_cancel)
 
+    human_parser = subparsers.add_parser("human")
+    human_subparsers = human_parser.add_subparsers(dest="human_command", required=True)
+
+    human_list_parser = human_subparsers.add_parser("list")
+    human_list_parser.set_defaults(func=cmd_human_list)
+
+    human_show_parser = human_subparsers.add_parser("show")
+    human_show_parser.add_argument("--id", required=True)
+    human_show_parser.set_defaults(func=cmd_human_show)
+
+    human_resolve_parser = human_subparsers.add_parser("resolve")
+    human_resolve_parser.add_argument("--id", required=True)
+    human_resolve_parser.add_argument("--choice", required=True)
+    human_resolve_parser.add_argument("--rationale", required=True)
+    human_resolve_parser.add_argument("--artifact-path")
+    human_resolve_parser.set_defaults(func=cmd_human_resolve)
+
     worker_parser = subparsers.add_parser("execution-worker")
     worker_parser.add_argument("--meta", required=True)
     worker_parser.set_defaults(func=cmd_execution_worker)
@@ -176,5 +224,8 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 1
     except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1

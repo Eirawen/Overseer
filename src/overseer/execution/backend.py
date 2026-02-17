@@ -294,7 +294,7 @@ class LocalBackend:
         self._append_event(meta_path, "escalated", {"reason": "missing required notes"})
         self._write_record(meta_path, record)
         if self.human_api is not None:
-            self.human_api.append_request({"id": record.task_id}, "missing required notes")
+            self.human_api.append_request({"id": record.task_id}, "missing required notes", run_id=record.run_id)
         return record
 
     def _write_record(self, path: Path, record: ExecutionRecord) -> None:

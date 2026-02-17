@@ -183,3 +183,117 @@ def test_run_cancel_command(tmp_path: Path) -> None:
     cancel_output = run_cli(repo, "run-cancel", "--run", run_id).stdout
     assert f"{run_id} task=" in cancel_output
     assert "status=canceled" in cancel_output
+
+
+def test_human_commands_list_show_resolve(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    init_git_repo(repo)
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+
+    schema = repo / "codex" / "04_HUMAN_API" / "REQUEST_SCHEMA.md"
+    schema.write_text(
+        (
+            "# Human Request Schema (strict)\n\n"
+            "HUMAN_REQUEST:\n"
+            "TYPE: {design_direction | decision | external_action | clarification | review}\n"
+            "URGENCY: {low | medium | high | interrupt_now}\n"
+            "TIME_REQUIRED_MIN: <int>\n"
+            "CONTEXT: <short>\n"
+            "OPTIONS:\n"
+            "  - <option A>\n"
+            "  - <option B>\n"
+            "RECOMMENDATION: <one of options or custom>\n"
+            "WHY: <1-3 bullets>\n"
+            "UNBLOCKS: <what changes after you answer>\n"
+            "REPLY_FORMAT: <exact expected reply>\n"
+        ),
+        encoding="utf-8",
+    )
+
+    task_id = run_cli(repo, "add-task", "integration objective").stdout.strip()
+    run_cli(repo, "integrate", "--task", task_id, check=False, env={"PATH": str(Path(shutil.which("git") or "").parent)})
+
+    listed = run_cli(repo, "human", "list").stdout.strip().splitlines()
+    assert listed
+    request_id = listed[0].split()[0]
+
+    show_output = run_cli(repo, "human", "show", "--id", request_id).stdout
+    assert "REQUEST_ID:" in show_output
+
+    resolve_output = run_cli(
+        repo,
+        "human",
+        "resolve",
+        "--id",
+        request_id,
+        "--choice",
+        "Redirect implementation approach",
+        "--rationale",
+        "Install codex first",
+    ).stdout
+    assert "resolved" in resolve_output
+
+    second = run_cli(
+        repo,
+        "human",
+        "resolve",
+        "--id",
+        request_id,
+        "--choice",
+        "Redirect implementation approach",
+        "--rationale",
+        "Install codex first",
+        check=False,
+    )
+    assert second.returncode != 0
+    assert "already resolved" in second.stderr
+
+
+
+def test_human_resolve_rejects_invalid_choice(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    init_git_repo(repo)
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+
+    schema = repo / "codex" / "04_HUMAN_API" / "REQUEST_SCHEMA.md"
+    schema.write_text(
+        (
+            "# Human Request Schema (strict)\n\n"
+            "HUMAN_REQUEST:\n"
+            "TYPE: {design_direction | decision | external_action | clarification | review}\n"
+            "URGENCY: {low | medium | high | interrupt_now}\n"
+            "TIME_REQUIRED_MIN: <int>\n"
+            "CONTEXT: <short>\n"
+            "OPTIONS:\n"
+            "  - <option A>\n"
+            "  - <option B>\n"
+            "RECOMMENDATION: <one of options or custom>\n"
+            "WHY: <1-3 bullets>\n"
+            "UNBLOCKS: <what changes after you answer>\n"
+            "REPLY_FORMAT: <exact expected reply>\n"
+        ),
+        encoding="utf-8",
+    )
+
+    task_id = run_cli(repo, "add-task", "integration objective").stdout.strip()
+    run_cli(repo, "integrate", "--task", task_id, check=False, env={"PATH": str(Path(shutil.which("git") or "").parent)})
+
+    request_id = run_cli(repo, "human", "list").stdout.strip().splitlines()[0].split()[0]
+    bad_resolve = run_cli(
+        repo,
+        "human",
+        "resolve",
+        "--id",
+        request_id,
+        "--choice",
+        "Not an option",
+        "--rationale",
+        "no",
+        check=False,
+    )
+    assert bad_resolve.returncode != 0
+    assert "choice must be one of" in bad_resolve.stderr
