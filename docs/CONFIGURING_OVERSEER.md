@@ -23,6 +23,30 @@ overseer --repo-root . run-status --run <run_id>
 overseer --repo-root . serve --host 127.0.0.1 --port 8765
 ```
 
+## Local UI MVP scaffold
+
+Start the daemon API first:
+
+```bash
+overseer --repo-root . serve --host 127.0.0.1 --port 8765
+```
+
+In a second terminal, run the UI with a single command:
+
+```bash
+./scripts/run-ui.sh
+```
+
+Open `http://127.0.0.1:5173` in your browser.
+
+Recommended UI validation checks:
+
+```bash
+npm --prefix ui run typecheck
+npm --prefix ui run test
+npm --prefix ui run build
+```
+
 ## Telemetry layout
 
 Each run writes logs to:

@@ -4,6 +4,24 @@
 
 - First launch guide: [`docs/CONFIGURING_OVERSEER.md`](docs/CONFIGURING_OVERSEER.md)
 
+## Local UI MVP (scaffold)
+
+Run the web UI with one command:
+
+```bash
+./scripts/run-ui.sh
+```
+
+Then open `http://127.0.0.1:5173` and point the API root to your running daemon (default `http://127.0.0.1:8765`).
+
+UI quality gates (TypeScript + frontend tests):
+
+```bash
+npm --prefix ui run typecheck
+npm --prefix ui run test
+npm --prefix ui run build
+```
+
 ## The Premise
 
 Overseer is not a tool.
