@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -215,10 +216,31 @@ class LocalBackend:
                 process = subprocess.Popen(  # noqa: S603
                     record.command,
                     cwd=record.cwd,
-                    stdout=stdout_handle,
-                    stderr=stderr_handle,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     text=True,
+                    bufsize=1,
                 )
+
+                def stream_output(stream: Any, handle: Any, event_type: str) -> None:
+                    if stream is None:
+                        return
+                    for chunk in iter(stream.readline, ""):
+                        handle.write(chunk)
+                        handle.flush()
+                        with file_lock(self._events_lock_path(meta_path)):
+                            self._append_event(meta_path, event_type, {"chunk": chunk})
+                    stream.close()
+
+                stdout_thread = threading.Thread(
+                    target=stream_output, args=(process.stdout, stdout_handle, "stdout"), daemon=True
+                )
+                stderr_thread = threading.Thread(
+                    target=stream_output, args=(process.stderr, stderr_handle, "stderr"), daemon=True
+                )
+                stdout_thread.start()
+                stderr_thread.start()
+
                 while process.poll() is None:
                     with file_lock(self._events_lock_path(meta_path)):
                         refreshed = self._derive_record(meta_path)
@@ -232,6 +254,8 @@ class LocalBackend:
                             break
                     time.sleep(0.1)
                 result_exit_code = process.wait()
+                stdout_thread.join(timeout=2)
+                stderr_thread.join(timeout=2)
 
         self._write_required_notes(record)
 
