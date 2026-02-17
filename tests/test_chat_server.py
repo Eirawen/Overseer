@@ -9,8 +9,11 @@ import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib import request
+from urllib.error import HTTPError
 
-from overseer.chat_server import OverseerChatService, build_server
+import pytest
+
+from overseer.chat_server import OverseerChatService, build_server, serve_chat
 from overseer.codex_store import CodexStore
 from overseer.execution.backend import ExecutionRecord, LocalBackend
 from overseer.human_api import HumanAPI
@@ -117,6 +120,59 @@ def test_runs_support_multiple_runs_for_same_task(tmp_path: Path, monkeypatch) -
     finally:
         server.shutdown()
         service.stop()
+
+
+def test_message_reuses_existing_task_id(tmp_path: Path, monkeypatch) -> None:
+    service, server, base_url, store = _setup_service(tmp_path, monkeypatch)
+    try:
+        task_store = TaskStore(store)
+        task = task_store.add_task("existing objective")
+        before_count = len(task_store.load_tasks())
+        out = _post_json(f"{base_url}/message", {"text": f"please execute {task['id']} now"})
+        after_tasks = task_store.load_tasks()
+        assert len(after_tasks) == before_count
+        assert out["created_task_id"] is None
+    finally:
+        server.shutdown()
+        service.stop()
+
+
+def test_message_writes_conversation_log_and_run_details(tmp_path: Path, monkeypatch) -> None:
+    service, server, base_url, store = _setup_service(tmp_path, monkeypatch)
+    try:
+        out = _post_json(f"{base_url}/message", {"text": "capture logs"})
+        run_id = out["created_run_ids"][0]
+
+        runs_detail = _get_json(f"{base_url}/runs/{run_id}")
+        assert runs_detail["run_id"] == run_id
+        assert runs_detail["worktree"].endswith(f"/codex/10_OVERSEER/worktrees/{run_id}")
+        assert runs_detail["meta_path"].endswith(f"/codex/08_TELEMETRY/runs/{run_id}/meta.json")
+        assert runs_detail["stdout_log"].endswith(f"/codex/08_TELEMETRY/runs/{run_id}/stdout.log")
+
+        conversation_files = sorted((store.codex_root / "08_TELEMETRY" / "conversations").glob("*.jsonl"))
+        assert conversation_files
+        lines = [json.loads(line) for line in conversation_files[-1].read_text(encoding="utf-8").splitlines()]
+        assert [entry["role"] for entry in lines[-2:]] == ["human", "assistant"]
+        assert lines[-1]["payload"]["created_run_ids"] == [run_id]
+    finally:
+        server.shutdown()
+        service.stop()
+
+
+def test_message_rejects_empty_text(tmp_path: Path, monkeypatch) -> None:
+    service, server, base_url, _ = _setup_service(tmp_path, monkeypatch)
+    try:
+        with pytest.raises(HTTPError) as exc:
+            _post_json(f"{base_url}/message", {"text": "   "})
+        assert exc.value.code == 400
+    finally:
+        server.shutdown()
+        service.stop()
+
+
+def test_serve_chat_rejects_non_localhost_binding() -> None:
+    with pytest.raises(RuntimeError, match="localhost only"):
+        serve_chat(object(), host="0.0.0.0", port=8765)  # type: ignore[arg-type]
 
 
 def test_events_emit_status_transitions(tmp_path: Path, monkeypatch) -> None:
