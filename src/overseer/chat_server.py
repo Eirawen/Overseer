@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from overseer.codex_store import CodexStore
+from overseer.chat_commands import parse_chat_command
 from overseer.human_api import HumanAPI
 from overseer.integrators import CodexIntegrator, RunRequest
 from overseer.task_store import TaskStore
@@ -85,6 +86,25 @@ class OverseerChatService:
         }
         with self._conversation_path().open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record) + "\n")
+        self._append_summary(role, text, payload or {})
+
+    def _summary_path(self) -> Path:
+        date_stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        return self.conversations_root / f"{date_stamp}.summary.json"
+
+    def _append_summary(self, role: str, text: str, payload: dict) -> None:
+        summary = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "role": role,
+            "summary": text.strip().replace("\n", " ")[:160],
+            "run_ids": payload.get("created_run_ids", []),
+        }
+        entries: list[dict] = []
+        summary_path = self._summary_path()
+        if summary_path.exists():
+            entries = json.loads(summary_path.read_text(encoding="utf-8"))
+        entries.append(summary)
+        summary_path.write_text(json.dumps(entries[-20:], indent=2) + "\n", encoding="utf-8")
 
     def _find_or_create_task(self, text: str) -> tuple[dict, str | None]:
         match = TASK_ID_RE.search(text)
@@ -115,6 +135,63 @@ class OverseerChatService:
         }
         self._append_conversation("assistant", assistant_text, payload=payload)
         return payload
+
+    def handle_command(self, text: str) -> dict:
+        self._append_conversation("human", text)
+        cmd = parse_chat_command(text)
+        if cmd.group == "session" and cmd.action == "quit":
+            payload = {"assistant_text": "Session ended.", "exit": True}
+            self._append_conversation("assistant", payload["assistant_text"], payload=payload)
+            return payload
+
+        if cmd.group == "run" and cmd.action == "list":
+            runs = self.list_runs()
+            lines = [f"{r['run_id']} task={r['task_id']} status={r['status']}" for r in runs]
+            payload = {"assistant_text": "\n".join(lines) if lines else "No runs found.", "runs": runs}
+            self._append_conversation("assistant", payload["assistant_text"], payload=payload)
+            return payload
+
+        if cmd.group == "run" and cmd.action in {"status", "cancel", "open"}:
+            run_id = cmd.args[0]
+            if cmd.action == "cancel":
+                self.integrator.cancel(run_id)
+            run = self.get_run(run_id)
+            if cmd.action == "open":
+                text_out = (
+                    f"run={run_id}\nworktree={run['worktree']}\nstdout={run['stdout_log']}\n"
+                    f"stderr={run['stderr_log']}\nmeta={run['meta_path']}\n"
+                    f"events={(self.codex_store.codex_root / '08_TELEMETRY' / 'runs' / run_id / 'events.jsonl')}"
+                )
+            else:
+                text_out = f"{run['run_id']} task={run['task_id']} status={run['status']} exit={run['exit_code']}"
+            payload = {"assistant_text": text_out, "run": run}
+            self._append_conversation("assistant", text_out, payload=payload)
+            return payload
+
+        if cmd.group == "queue" and cmd.action == "list":
+            requests = self.human_api.list_requests()
+            lines = [f"{r.request_id} status={r.status} type={r.request_type}" for r in requests]
+            payload = {
+                "assistant_text": "\n".join(lines) if lines else "Human queue is empty.",
+                "requests": [r.request_id for r in requests],
+            }
+            self._append_conversation("assistant", payload["assistant_text"], payload=payload)
+            return payload
+
+        if cmd.group == "queue" and cmd.action == "resolve":
+            parsed = _parse_queue_resolve_args(cmd.args)
+            resolution = self.human_api.resolve_request(
+                request_id=parsed["request_id"],
+                choice=parsed["choice"],
+                rationale=parsed["rationale"],
+                artifact_path=parsed.get("artifact_path"),
+            )
+            text_out = f"resolved {parsed['request_id']} -> {resolution}"
+            payload = {"assistant_text": text_out}
+            self._append_conversation("assistant", text_out, payload=payload)
+            return payload
+
+        raise ValueError(f"unsupported command: {text}")
 
     def list_runs(self) -> list[dict]:
         out: list[dict] = []
@@ -174,6 +251,34 @@ class OverseerChatService:
                 self._human_request_count = request_count
             time.sleep(0.3)
 
+
+def _parse_queue_resolve_args(tokens: tuple[str, ...]) -> dict[str, str]:
+    if not tokens:
+        raise ValueError(
+            "usage: /queue resolve <request_id> --choice <choice> --rationale <rationale> [--artifact-path <path>]"
+        )
+    parsed: dict[str, str] = {"request_id": tokens[0]}
+    idx = 1
+    while idx < len(tokens):
+        flag = tokens[idx]
+        if flag not in {"--choice", "--rationale", "--artifact-path"}:
+            raise ValueError(f"unknown queue resolve flag: {flag}")
+        if idx + 1 >= len(tokens):
+            raise ValueError(f"missing value for {flag}")
+        value = tokens[idx + 1]
+        if flag == "--choice":
+            parsed["choice"] = value
+        elif flag == "--rationale":
+            parsed["rationale"] = value
+        else:
+            parsed["artifact_path"] = value
+        idx += 2
+
+    if "choice" not in parsed or "rationale" not in parsed:
+        raise ValueError(
+            "usage: /queue resolve <request_id> --choice <choice> --rationale <rationale> [--artifact-path <path>]"
+        )
+    return parsed
 
 class OverseerHandler(BaseHTTPRequestHandler):
     service: OverseerChatService
