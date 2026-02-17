@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,9 +16,10 @@ from overseer.fs import atomic_write_text, test_delay_meta_after_read
 from overseer.human_api import HumanAPI
 from overseer.locks import file_lock
 
-RunStatus = Literal["queued", "running", "done", "failed", "canceled"]
+RunStatus = Literal["queued", "running", "canceling", "done", "failed", "canceled"]
 
 TERMINAL_STATUSES: frozenset[str] = frozenset({"done", "failed", "canceled"})
+REQUIRES_NOTES_STATUSES: frozenset[str] = frozenset({"done", "failed"})
 
 
 @dataclass(frozen=True)
@@ -153,18 +155,34 @@ class LocalBackend:
             test_delay_meta_after_read()
             if record.status in TERMINAL_STATUSES:
                 return record
+            self._append_event(
+                meta_path,
+                "cancel_requested",
+                {
+                    "requested_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            if record.status != "canceling":
+                self._append_event(
+                    meta_path,
+                    "status_change",
+                    {
+                        "status": "canceling",
+                    },
+                )
             if record.worker_pid is not None:
                 try:
                     os.kill(record.worker_pid, signal.SIGTERM)
                 except OSError:
                     pass
-            self._append_event(
-                meta_path,
-                "canceled",
-                {
-                    "ended_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
+            if record.status == "queued":
+                self._append_event(
+                    meta_path,
+                    "canceled",
+                    {
+                        "ended_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
             return self._derive_record(meta_path)
 
     def run_worker(self, meta_path: Path) -> int:
@@ -172,7 +190,15 @@ class LocalBackend:
         with file_lock(self._events_lock_path(meta_path)):
             record = self._derive_record(meta_path)
             test_delay_meta_after_read()
-            if record.status == "canceled":
+            if record.status in {"canceling", "canceled"}:
+                if record.status == "canceling":
+                    self._append_event(
+                        meta_path,
+                        "canceled",
+                        {
+                            "ended_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
                 return 1
             self._append_event(
                 meta_path,
@@ -186,31 +212,52 @@ class LocalBackend:
                 Path(record.stdout_log).open("w", encoding="utf-8") as stdout_handle,
                 Path(record.stderr_log).open("w", encoding="utf-8") as stderr_handle,
             ):
-                result = subprocess.run(  # noqa: S603
+                process = subprocess.Popen(  # noqa: S603
                     record.command,
                     cwd=record.cwd,
                     stdout=stdout_handle,
                     stderr=stderr_handle,
                     text=True,
-                    check=False,
                 )
+                while process.poll() is None:
+                    with file_lock(self._events_lock_path(meta_path)):
+                        refreshed = self._derive_record(meta_path)
+                        if refreshed.status in {"canceling", "canceled"}:
+                            process.terminate()
+                            try:
+                                process.wait(timeout=2)
+                            except subprocess.TimeoutExpired:
+                                process.kill()
+                                process.wait(timeout=2)
+                            break
+                    time.sleep(0.1)
+                result_exit_code = process.wait()
 
         self._write_required_notes(record)
 
         with file_lock(self._events_lock_path(meta_path)):
             record = self._derive_record(meta_path)
             test_delay_meta_after_read()
+            if record.status == "canceling":
+                self._append_event(
+                    meta_path,
+                    "canceled",
+                    {
+                        "ended_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+                record = self._derive_record(meta_path)
             if record.status not in TERMINAL_STATUSES:
                 self._append_event(
                     meta_path,
                     "completed",
                     {
                         "ended_at": datetime.now(timezone.utc).isoformat(),
-                        "exit_code": result.returncode,
-                        "status": "done" if result.returncode == 0 else "failed",
+                        "exit_code": result_exit_code,
+                        "status": "done" if result_exit_code == 0 else "failed",
                     },
                 )
-        return result.returncode
+        return result_exit_code
 
     def _write_required_notes(self, record: ExecutionRecord) -> None:
         timestamp = datetime.now(timezone.utc).isoformat()
@@ -225,7 +272,7 @@ class LocalBackend:
             handle.write(f"- [{timestamp}] run={record.run_id} task={record.task_id}\n")
 
     def _enforce_required_notes(self, record: ExecutionRecord, meta_path: Path) -> ExecutionRecord:
-        if record.status not in TERMINAL_STATUSES or record.notes_enforced:
+        if record.status not in REQUIRES_NOTES_STATUSES or record.notes_enforced:
             return record
 
         run_notes = self.runs_root / record.run_id / "notes.md"
@@ -320,6 +367,8 @@ class LocalBackend:
             elif event.type == "canceled":
                 record.status = "canceled"
                 record.ended_at = payload.get("ended_at", event.at)
+            elif event.type == "cancel_requested":
+                continue
             elif event.type == "completed":
                 record.status = payload["status"]
                 record.ended_at = payload.get("ended_at", event.at)

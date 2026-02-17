@@ -13,6 +13,7 @@ from overseer.execution.backend import (
     ExecutionRequest,
     LocalBackend,
 )
+from overseer.locks import file_lock
 
 
 def test_new_run_id_format() -> None:
@@ -118,3 +119,67 @@ def test_submit_creates_meta_and_returns_run_id(tmp_path: Path) -> None:
     assert meta["run_id"] == run_id
     assert meta["status"] == "queued"
     assert "worker_pid" in meta
+
+
+def test_cancel_records_requested_canceling_canceled_events(tmp_path: Path) -> None:
+    codex_root = tmp_path / "codex"
+    codex_root.mkdir(parents=True)
+    backend = LocalBackend(codex_root)
+    run_id = "run-cancel-seq"
+    run_dir = codex_root / "08_TELEMETRY" / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    meta = run_dir / "meta.json"
+    record = ExecutionRecord(
+        run_id=run_id,
+        task_id="task-1",
+        status="queued",
+        command=[sys.executable, "-c", "pass"],
+        cwd=str(tmp_path),
+        stdout_log=str(run_dir / "stdout.log"),
+        stderr_log=str(run_dir / "stderr.log"),
+        meta_path=str(meta),
+        lock_path=str(tmp_path / "locks" / "x.lock"),
+        created_at="2020-01-01T00:00:00Z",
+    )
+    with file_lock(backend._events_lock_path(meta)):
+        backend._append_event(meta, "started", {"record": asdict(record)})
+
+    backend.cancel(run_id)
+
+    events = [
+        json.loads(line)["type"]
+        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert events == ["started", "cancel_requested", "status_change", "canceled"]
+    assert json.loads(meta.read_text(encoding="utf-8"))["status"] == "canceled"
+
+
+def test_cancel_queued_run_stays_canceled_on_status(tmp_path: Path) -> None:
+    codex_root = tmp_path / "codex"
+    codex_root.mkdir(parents=True)
+    backend = LocalBackend(codex_root)
+    run_id = "run-cancel-queued"
+    run_dir = codex_root / "08_TELEMETRY" / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    meta = run_dir / "meta.json"
+    record = ExecutionRecord(
+        run_id=run_id,
+        task_id="task-1",
+        status="queued",
+        command=[sys.executable, "-c", "pass"],
+        cwd=str(tmp_path),
+        stdout_log=str(run_dir / "stdout.log"),
+        stderr_log=str(run_dir / "stderr.log"),
+        meta_path=str(meta),
+        lock_path=str(tmp_path / "locks" / "x.lock"),
+        created_at="2020-01-01T00:00:00Z",
+    )
+    with file_lock(backend._events_lock_path(meta)):
+        backend._append_event(meta, "started", {"record": asdict(record)})
+
+    canceled = backend.cancel(run_id)
+    assert canceled.status == "canceled"
+
+    got = backend.status(run_id)
+    assert got.status == "canceled"

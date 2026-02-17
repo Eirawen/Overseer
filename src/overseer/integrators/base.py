@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-RunState = Literal["queued", "running", "done", "failed", "canceled"]
+RunState = Literal["queued", "running", "canceling", "done", "failed", "canceled"]
 
 
 @dataclass(frozen=True)
@@ -27,3 +27,5 @@ class BaseIntegrator(Protocol):
     def status(self, run_id: str) -> RunResult: ...
 
     def runs(self) -> list[RunResult]: ...
+
+    def cancel(self, run_id: str) -> RunResult: ...

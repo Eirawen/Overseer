@@ -79,3 +79,13 @@ class CodexIntegrator:
             RunResult(run_id=r.run_id, task_id=r.task_id, status=r.status, exit_code=r.exit_code)
             for r in records
         ]
+
+    def cancel(self, run_id: str) -> RunResult:
+        record = self.backend.cancel(run_id)
+        return RunResult(
+            run_id=record.run_id,
+            task_id=record.task_id,
+            status=record.status,
+            exit_code=record.exit_code,
+        )
+

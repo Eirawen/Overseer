@@ -90,6 +90,13 @@ def cmd_run_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_run_cancel(args: argparse.Namespace) -> int:
+    integrator = _build_integrator(Path(args.repo_root))
+    run = integrator.cancel(args.run)
+    print(f"{run.run_id} task={run.task_id} status={run.status} exit={run.exit_code}")
+    return 0
+
+
 def cmd_execution_worker(args: argparse.Namespace) -> int:
     meta_path = Path(args.meta)
     codex_root = meta_path.parents[3]
@@ -143,6 +150,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_status_parser = subparsers.add_parser("run-status")
     run_status_parser.add_argument("--run", required=True)
     run_status_parser.set_defaults(func=cmd_run_status)
+
+    run_cancel_parser = subparsers.add_parser("run-cancel")
+    run_cancel_parser.add_argument("--run", required=True)
+    run_cancel_parser.set_defaults(func=cmd_run_cancel)
 
     worker_parser = subparsers.add_parser("execution-worker")
     worker_parser.add_argument("--meta", required=True)
