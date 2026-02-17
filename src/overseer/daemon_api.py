@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import re
 import threading
 import time
 from dataclasses import asdict
@@ -9,6 +12,9 @@ from typing import Any
 from overseer.execution.backend import LocalBackend
 from overseer.human_api import HumanAPI
 from overseer.integrators import CodexIntegrator
+
+MAX_WS_MESSAGE_BYTES = 4096
+RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 class OverseerDaemon:
@@ -83,8 +89,18 @@ def _resolve_queue(
     )
 
 
+def _validate_run_id(run_id: str | None) -> str | None:
+    if run_id is None:
+        return None
+    if not RUN_ID_RE.fullmatch(run_id):
+        raise ValueError("invalid run_id")
+    if ".." in run_id or "/" in run_id or "\\" in run_id:
+        raise ValueError("invalid run_id")
+    return run_id
+
+
 def create_app(daemon: OverseerDaemon) -> Any:
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
     from pydantic import BaseModel
 
     class QueueResolutionPayload(BaseModel):
@@ -155,6 +171,93 @@ def create_app(daemon: OverseerDaemon) -> Any:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"request_id": request_id, "resolution_path": str(resolution_path)}
+
+    @app.websocket("/events")
+    async def stream_events(websocket: WebSocket) -> None:
+        try:
+            run_filter = _validate_run_id(websocket.query_params.get("run_id"))
+        except ValueError:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="invalid run_id")
+            return
+
+        await websocket.accept()
+        offsets: dict[str, int] = {}
+
+        async def send_subscription() -> None:
+            await websocket.send_json({"type": "subscribed", "run_id": run_filter})
+
+        def iter_event_paths() -> list[Path]:
+            if run_filter is not None:
+                return [daemon.backend.runs_root / run_filter / "events.jsonl"]
+            return sorted(daemon.backend.runs_root.glob("*/events.jsonl"))
+
+        async def flush_events() -> None:
+            for events_path in iter_event_paths():
+                key = str(events_path)
+                seen = offsets.get(key, 0)
+                next_offset = seen
+                if not events_path.exists():
+                    offsets[key] = seen
+                    continue
+                with events_path.open(encoding="utf-8") as handle:
+                    for idx, line in enumerate(handle):
+                        next_offset = idx + 1
+                        if idx < seen:
+                            continue
+                        payload = line.strip()
+                        if not payload:
+                            continue
+                        try:
+                            event = json.loads(payload)
+                        except json.JSONDecodeError:
+                            continue
+                        run_id = events_path.parent.name
+                        await websocket.send_json({"type": "event", "run_id": run_id, "event": event})
+                offsets[key] = next_offset
+
+        await send_subscription()
+        try:
+            while True:
+                await flush_events()
+                try:
+                    raw = await asyncio.wait_for(
+                        websocket.receive_text(), timeout=daemon.poll_interval_s
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                if len(raw.encode("utf-8")) > MAX_WS_MESSAGE_BYTES:
+                    await websocket.send_json({"type": "error", "detail": "message too large"})
+                    continue
+
+                try:
+                    message = json.loads(raw)
+                except json.JSONDecodeError:
+                    await websocket.send_json({"type": "error", "detail": "invalid json"})
+                    continue
+                if not isinstance(message, dict):
+                    await websocket.send_json({"type": "error", "detail": "invalid message"})
+                    continue
+
+                action = message.get("action")
+                if action == "subscribe":
+                    try:
+                        run_filter = _validate_run_id(message.get("run_id"))
+                    except ValueError:
+                        await websocket.send_json({"type": "error", "detail": "invalid run_id"})
+                        continue
+                    offsets = {}
+                    await send_subscription()
+                elif action == "unsubscribe":
+                    run_filter = None
+                    offsets = {}
+                    await send_subscription()
+                elif action == "ping":
+                    await websocket.send_json({"type": "pong"})
+                else:
+                    await websocket.send_json({"type": "error", "detail": "unknown action"})
+        except (WebSocketDisconnect, RuntimeError):
+            return
 
     return app
 

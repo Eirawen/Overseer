@@ -10,6 +10,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from overseer.codex_store import CodexStore
 from overseer.daemon_api import OverseerDaemon, create_app
@@ -176,5 +177,145 @@ def test_queue_resolve_endpoint_success_and_failures(tmp_path: Path) -> None:
             json={"choice": request.options[0], "rationale": "missing"},
         )
         assert missing.status_code == 404
+    finally:
+        daemon.stop()
+
+
+def _receive_until(websocket: TestClient, predicate, limit: int = 200):
+    messages = []
+    for _ in range(limit):
+        payload = websocket.receive_json()
+        messages.append(payload)
+        if predicate(payload):
+            return payload, messages
+    raise AssertionError("condition was not met before message limit")
+
+
+def test_websocket_events_stream_stdout_and_stderr(tmp_path: Path) -> None:
+    daemon, client, _, backend = _setup_daemon(tmp_path)
+    try:
+        run_id = "run-ws-events"
+        run_dir = backend.runs_root / run_id
+        request = ExecutionRequest(
+            run_id=run_id,
+            task_id="task-ws-events",
+            command=[
+                sys.executable,
+                "-c",
+                "import sys, time; print('hello-out', flush=True); print('hello-err', file=sys.stderr, flush=True); time.sleep(0.05)",
+            ],
+            cwd=tmp_path,
+            stdout_log=run_dir / "stdout.log",
+            stderr_log=run_dir / "stderr.log",
+            meta_path=run_dir / "meta.json",
+            lock_path=tmp_path / "ws-events.lock",
+        )
+
+        with client.websocket_connect(f"/events?run_id={run_id}") as websocket:
+            subscribed = websocket.receive_json()
+            assert subscribed == {"type": "subscribed", "run_id": run_id}
+            backend.submit(request)
+
+            _, messages = _receive_until(
+                websocket,
+                lambda payload: payload.get("type") == "event"
+                and payload.get("event", {}).get("type") == "completed",
+            )
+
+        event_types = [
+            message["event"]["type"]
+            for message in messages
+            if message.get("type") == "event"
+        ]
+        assert "stdout" in event_types
+        assert "stderr" in event_types
+    finally:
+        daemon.stop()
+
+
+def test_websocket_supports_two_subscribers_for_same_run(tmp_path: Path) -> None:
+    daemon, client, _, backend = _setup_daemon(tmp_path)
+    try:
+        run_id = "run-ws-multi"
+        run_dir = backend.runs_root / run_id
+        request = ExecutionRequest(
+            run_id=run_id,
+            task_id="task-ws-multi",
+            command=[sys.executable, "-c", "print('shared-output', flush=True)"],
+            cwd=tmp_path,
+            stdout_log=run_dir / "stdout.log",
+            stderr_log=run_dir / "stderr.log",
+            meta_path=run_dir / "meta.json",
+            lock_path=tmp_path / "ws-multi.lock",
+        )
+
+        with (
+            client.websocket_connect(f"/events?run_id={run_id}") as ws_one,
+            client.websocket_connect(f"/events?run_id={run_id}") as ws_two,
+        ):
+            assert ws_one.receive_json() == {"type": "subscribed", "run_id": run_id}
+            assert ws_two.receive_json() == {"type": "subscribed", "run_id": run_id}
+
+            backend.submit(request)
+
+            one_event, _ = _receive_until(
+                ws_one,
+                lambda payload: payload.get("type") == "event"
+                and payload.get("event", {}).get("type") == "stdout",
+            )
+            two_event, _ = _receive_until(
+                ws_two,
+                lambda payload: payload.get("type") == "event"
+                and payload.get("event", {}).get("type") == "stdout",
+            )
+
+        assert one_event["event"]["payload"]["chunk"].strip() == "shared-output"
+        assert two_event["event"]["payload"]["chunk"].strip() == "shared-output"
+    finally:
+        daemon.stop()
+
+
+def test_websocket_rejects_invalid_run_filter_query(tmp_path: Path) -> None:
+    daemon, client, _, _ = _setup_daemon(tmp_path)
+    try:
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect('/events?run_id=../../etc/passwd'):
+                pass
+    finally:
+        daemon.stop()
+
+
+def test_websocket_invalid_json_and_oversized_messages_return_errors(tmp_path: Path) -> None:
+    daemon, client, _, _ = _setup_daemon(tmp_path)
+    try:
+        with client.websocket_connect('/events') as websocket:
+            assert websocket.receive_json() == {'type': 'subscribed', 'run_id': None}
+
+            websocket.send_text('not-json')
+            assert websocket.receive_json() == {'type': 'error', 'detail': 'invalid json'}
+
+            websocket.send_text(json.dumps(['bad', 'shape']))
+            assert websocket.receive_json() == {'type': 'error', 'detail': 'invalid message'}
+
+            websocket.send_text(json.dumps({'action': 'ping', 'payload': 'x' * 5000}))
+            assert websocket.receive_json() == {'type': 'error', 'detail': 'message too large'}
+    finally:
+        daemon.stop()
+
+
+def test_websocket_subscribe_validation_and_ping(tmp_path: Path) -> None:
+    daemon, client, _, _ = _setup_daemon(tmp_path)
+    try:
+        with client.websocket_connect('/events') as websocket:
+            assert websocket.receive_json() == {'type': 'subscribed', 'run_id': None}
+
+            websocket.send_json({'action': 'subscribe', 'run_id': 'run-valid-123'})
+            assert websocket.receive_json() == {'type': 'subscribed', 'run_id': 'run-valid-123'}
+
+            websocket.send_json({'action': 'subscribe', 'run_id': '../bad'})
+            assert websocket.receive_json() == {'type': 'error', 'detail': 'invalid run_id'}
+
+            websocket.send_json({'action': 'ping'})
+            assert websocket.receive_json() == {'type': 'pong'}
     finally:
         daemon.stop()

@@ -231,7 +231,10 @@ We will build text-first UI, then optionally add voice polish. Voice is presenta
   - [x] `POST /runs/{id}/cancel`
   - [x] `GET /queue`
   - [x] `POST /queue/{id}/resolve`
+  - [x] `WS /events` (JSON subscribe protocol with optional `run_id` filtering)
+  - [x] Harden `/events` protocol validation (run_id sanitization, malformed payload handling, size limits)
   - [ ] `GET /runs/{id}/logs`
+  - [ ] Add heartbeat/backpressure policy for long-lived event subscribers
 - [ ] Or, if staying fully local-process, a direct Python binding is OK initially—but API tends to simplify UI.
 
 #### M2.4 Voice polish (optional, after text UX is correct)
