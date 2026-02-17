@@ -93,14 +93,17 @@ Goal: execution/run lifecycle is correct, concurrency-safe, observable, and test
 - [ ] Define telemetry layout contract:
   - [ ] `codex/08_TELEMETRY/runs/<run_id>/meta.json`
   - [ ] stdout/stderr logs
-  - [ ] optional: events.jsonl for structured events (recommended)
-- [ ] Add structured events (minimal):
+  - [x] optional: events.jsonl for structured events (recommended)
+- [x] Add structured events (minimal):
   - [ ] run_created
   - [ ] worktree_created
   - [ ] codex_started
   - [ ] codex_finished (exit code)
-  - [ ] run_state_changed
-  - [ ] escalation_created (with reason)
+  - [x] run_state_changed
+  - [x] escalation_created (with reason)
+  - [x] append-only `events.jsonl` per run with reducer-derived `meta.json` cache
+  - [x] deterministic replay tests (including restart recovery)
+  - [x] concurrent event append locking tests to prevent JSONL corruption
 - [ ] Summary generation:
   - [ ] Store summary alongside raw logs (but raw remains canonical)
   - [ ] Summaries are optional; absence is not failure

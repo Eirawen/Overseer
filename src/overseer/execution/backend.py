@@ -8,7 +8,7 @@ import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 from uuid import uuid4
 
 from overseer.fs import atomic_write_text, test_delay_meta_after_read
@@ -51,6 +51,13 @@ class ExecutionRecord:
     notes_enforced: bool = False
 
 
+@dataclass(frozen=True)
+class RunEvent:
+    type: str
+    at: str
+    payload: dict[str, Any]
+
+
 class ExecutionBackend(Protocol):
     def submit(self, request: ExecutionRequest) -> str: ...
 
@@ -78,6 +85,12 @@ class LocalBackend:
     def _meta_lock_path(self, meta_path: Path) -> Path:
         return meta_path.parent / "meta.lock"
 
+    def _events_path(self, meta_path: Path) -> Path:
+        return meta_path.parent / "events.jsonl"
+
+    def _events_lock_path(self, meta_path: Path) -> Path:
+        return meta_path.parent / "events.lock"
+
     def submit(self, request: ExecutionRequest) -> str:
         request.stdout_log.parent.mkdir(parents=True, exist_ok=True)
         request.stderr_log.parent.mkdir(parents=True, exist_ok=True)
@@ -93,8 +106,14 @@ class LocalBackend:
             lock_path=str(request.lock_path),
             created_at=datetime.now(timezone.utc).isoformat(),
         )
-        with file_lock(self._meta_lock_path(request.meta_path)):
-            self._write_record(request.meta_path, record)
+        with file_lock(self._events_lock_path(request.meta_path)):
+            self._append_event(
+                request.meta_path,
+                "started",
+                {
+                    "record": asdict(record),
+                },
+            )
 
         worker_command = [
             sys.executable,
@@ -109,29 +128,28 @@ class LocalBackend:
         process = subprocess.Popen(
             worker_command, cwd=request.cwd, env=env, start_new_session=True
         )  # noqa: S603
-        record.worker_pid = process.pid
-        with file_lock(self._meta_lock_path(request.meta_path)):
-            self._write_record(request.meta_path, record)
+        with file_lock(self._events_lock_path(request.meta_path)):
+            self._append_event(request.meta_path, "status_change", {"worker_pid": process.pid})
         return request.run_id
 
     def status(self, run_id: str) -> ExecutionRecord:
         meta_path = self.runs_root / run_id / "meta.json"
-        with file_lock(self._meta_lock_path(meta_path)):
-            record = self._read_record(meta_path)
+        with file_lock(self._events_lock_path(meta_path)):
+            record = self._derive_record(meta_path)
             return self._enforce_required_notes(record, meta_path)
 
     def list_runs(self) -> list[ExecutionRecord]:
         records: list[ExecutionRecord] = []
         for meta in sorted(self.runs_root.glob("*/meta.json")):
-            with file_lock(self._meta_lock_path(meta)):
-                record = self._read_record(meta)
+            with file_lock(self._events_lock_path(meta)):
+                record = self._derive_record(meta)
                 records.append(self._enforce_required_notes(record, meta))
         return records
 
     def cancel(self, run_id: str) -> ExecutionRecord:
         meta_path = self.runs_root / run_id / "meta.json"
-        with file_lock(self._meta_lock_path(meta_path)):
-            record = self._read_record(meta_path)
+        with file_lock(self._events_lock_path(meta_path)):
+            record = self._derive_record(meta_path)
             test_delay_meta_after_read()
             if record.status in TERMINAL_STATUSES:
                 return record
@@ -140,21 +158,28 @@ class LocalBackend:
                     os.kill(record.worker_pid, signal.SIGTERM)
                 except OSError:
                     pass
-            record.status = "canceled"
-            record.ended_at = datetime.now(timezone.utc).isoformat()
-            self._write_record(meta_path, record)
-            return record
+            self._append_event(
+                meta_path,
+                "canceled",
+                {
+                    "ended_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            return self._derive_record(meta_path)
 
     def run_worker(self, meta_path: Path) -> int:
         meta_path = Path(meta_path)
-        with file_lock(self._meta_lock_path(meta_path)):
-            record = self._read_record(meta_path)
+        with file_lock(self._events_lock_path(meta_path)):
+            record = self._derive_record(meta_path)
             test_delay_meta_after_read()
             if record.status == "canceled":
                 return 1
-            record.status = "running"
-            record.started_at = datetime.now(timezone.utc).isoformat()
-            self._write_record(meta_path, record)
+            self._append_event(
+                meta_path,
+                "status_change",
+                {"status": "running", "started_at": datetime.now(timezone.utc).isoformat()},
+            )
+            record = self._derive_record(meta_path)
 
         with file_lock(Path(record.lock_path)):
             with (
@@ -172,14 +197,19 @@ class LocalBackend:
 
         self._write_required_notes(record)
 
-        with file_lock(self._meta_lock_path(meta_path)):
-            record = self._read_record(meta_path)
+        with file_lock(self._events_lock_path(meta_path)):
+            record = self._derive_record(meta_path)
             test_delay_meta_after_read()
-            record.ended_at = datetime.now(timezone.utc).isoformat()
-            record.exit_code = result.returncode
             if record.status not in TERMINAL_STATUSES:
-                record.status = "done" if result.returncode == 0 else "failed"
-            self._write_record(meta_path, record)
+                self._append_event(
+                    meta_path,
+                    "completed",
+                    {
+                        "ended_at": datetime.now(timezone.utc).isoformat(),
+                        "exit_code": result.returncode,
+                        "status": "done" if result.returncode == 0 else "failed",
+                    },
+                )
         return result.returncode
 
     def _write_required_notes(self, record: ExecutionRecord) -> None:
@@ -214,6 +244,7 @@ class LocalBackend:
             record.exit_code = 1
         if record.ended_at is None:
             record.ended_at = datetime.now(timezone.utc).isoformat()
+        self._append_event(meta_path, "escalated", {"reason": "missing required notes"})
         self._write_record(meta_path, record)
         if self.human_api is not None:
             self.human_api.append_request({"id": record.task_id}, "missing required notes")
@@ -226,3 +257,75 @@ class LocalBackend:
     def _read_record(self, path: Path) -> ExecutionRecord:
         payload = json.loads(path.read_text(encoding="utf-8"))
         return ExecutionRecord(**payload)
+
+    def _append_event(self, meta_path: Path, event_type: str, payload: dict[str, Any]) -> None:
+        events_path = self._events_path(meta_path)
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        events = self._read_events(events_path)
+        if not events and event_type != "started" and meta_path.exists():
+            seed = RunEvent(
+                type="started",
+                at=datetime.now(timezone.utc).isoformat(),
+                payload={"record": asdict(self._read_record(meta_path))},
+            )
+            with events_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(asdict(seed), sort_keys=True) + "\n")
+            events = [seed]
+
+        event = RunEvent(type=event_type, at=datetime.now(timezone.utc).isoformat(), payload=payload)
+        with events_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(asdict(event), sort_keys=True) + "\n")
+        events.append(event)
+        record = self._reduce_events(events)
+        self._write_record(meta_path, record)
+
+    def _read_events(self, events_path: Path) -> list[RunEvent]:
+        if not events_path.exists():
+            return []
+        events: list[RunEvent] = []
+        with events_path.open(encoding="utf-8") as handle:
+            for line in handle:
+                text = line.strip()
+                if not text:
+                    continue
+                payload = json.loads(text)
+                events.append(RunEvent(type=payload["type"], at=payload["at"], payload=payload["payload"]))
+        return events
+
+    def _derive_record(self, meta_path: Path) -> ExecutionRecord:
+        events_path = self._events_path(meta_path)
+        events = self._read_events(events_path)
+        if events:
+            record = self._reduce_events(events)
+            self._write_record(meta_path, record)
+            return record
+        return self._read_record(meta_path)
+
+    def _reduce_events(self, events: list[RunEvent]) -> ExecutionRecord:
+        if not events:
+            raise ValueError("cannot reduce empty event stream")
+        first = events[0]
+        if first.type != "started":
+            raise ValueError("first run event must be started")
+        record = ExecutionRecord(**first.payload["record"])
+        for event in events[1:]:
+            payload = event.payload
+            if event.type == "status_change":
+                if "status" in payload:
+                    record.status = payload["status"]
+                if "started_at" in payload:
+                    record.started_at = payload["started_at"]
+                if "worker_pid" in payload:
+                    record.worker_pid = payload["worker_pid"]
+            elif event.type == "canceled":
+                record.status = "canceled"
+                record.ended_at = payload.get("ended_at", event.at)
+            elif event.type == "completed":
+                record.status = payload["status"]
+                record.ended_at = payload.get("ended_at", event.at)
+                record.exit_code = payload.get("exit_code")
+            elif event.type == "escalated":
+                record.status = "failed"
+            elif event.type in {"stdout", "stderr", "summary_written"}:
+                continue
+        return record
