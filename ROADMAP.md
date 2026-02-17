@@ -222,13 +222,16 @@ We will build text-first UI, then optionally add voice polish. Voice is presenta
   - [ ] Open logs
 
 #### M2.3 UI ↔ backend bridge
+- [x] Add daemonized run-state poller that refreshes derived run state for API responses
+- [x] Harden local daemon API error handling (404 for missing runs/queue items, 400 for invalid resolve payload)
 - [ ] Provide a local API surface:
-  - [ ] `POST /chat/send`
-  - [ ] `POST /runs/submit`
-  - [ ] `GET /runs/:id`
-  - [ ] `GET /runs/:id/logs`
-  - [ ] `GET /human-queue`
-  - [ ] `POST /human-queue/:id/reply`
+  - [x] `GET /health`
+  - [x] `GET /runs`
+  - [x] `GET /runs/{id}`
+  - [x] `POST /runs/{id}/cancel`
+  - [x] `GET /queue`
+  - [x] `POST /queue/{id}/resolve`
+  - [ ] `GET /runs/{id}/logs`
 - [ ] Or, if staying fully local-process, a direct Python binding is OK initially—but API tends to simplify UI.
 
 #### M2.4 Voice polish (optional, after text UX is correct)
