@@ -106,7 +106,6 @@ def test_meta_json_never_partially_written_under_concurrent_reads(tmp_path: Path
 
 
 def test_cancel_vs_worker_no_status_regression(tmp_path: Path) -> None:
-    real_subprocess_run = subprocess.run
     codex_root = tmp_path / "codex"
     codex_root.mkdir(parents=True)
     (codex_root / "08_TELEMETRY" / "runs").mkdir(parents=True)
@@ -117,19 +116,12 @@ def test_cancel_vs_worker_no_status_regression(tmp_path: Path) -> None:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     meta_path = run_root / "meta.json"
 
-    block_event = threading.Event()
-    finished_event = threading.Event()
-
-    def blocking_run(*args: object, **kwargs: object) -> object:
-        block_event.wait(timeout=5)
-        return real_subprocess_run(*args, **kwargs)  # noqa: S603
-
     backend = LocalBackend(codex_root)
     record = ExecutionRecord(
         run_id=run_id,
         task_id="task-1",
         status="queued",
-        command=[sys.executable, "-c", "pass"],
+        command=[sys.executable, "-c", "import time; time.sleep(5)"],
         cwd=str(tmp_path),
         stdout_log=str(run_root / "stdout.log"),
         stderr_log=str(run_root / "stderr.log"),
@@ -137,24 +129,22 @@ def test_cancel_vs_worker_no_status_regression(tmp_path: Path) -> None:
         lock_path=str(lock_path),
         created_at="2020-01-01T00:00:00Z",
     )
-    backend._write_record(meta_path, record)
+    with file_lock(backend._events_lock_path(meta_path)):
+        backend._append_event(meta_path, "started", {"record": record.__dict__})
 
-    worker_exit: list[int] = []
-
-    def run_worker_thread() -> None:
-        with pytest.MonkeyPatch().context() as m:
-            m.setattr("overseer.execution.backend.subprocess.run", blocking_run)
-            exit_code = backend.run_worker(meta_path)
-            worker_exit.append(exit_code)
-        finished_event.set()
-
-    t = threading.Thread(target=run_worker_thread)
+    t = threading.Thread(target=backend.run_worker, args=(meta_path,))
     t.start()
-    time.sleep(0.25)
-    backend.cancel(run_id)
-    block_event.set()
-    t.join(timeout=5)
-    finished_event.wait(timeout=2)
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if backend.status(run_id).status == "running":
+            break
+        time.sleep(0.05)
+
+    canceling = backend.cancel(run_id)
+    assert canceling.status == "canceling"
+
+    t.join(timeout=10)
 
     rec = backend.status(run_id)
     assert rec.status == "canceled"
@@ -331,3 +321,63 @@ def test_worktree_collision_raises(tmp_path: Path) -> None:
     mgr = GitWorktreeManager(repo_root=repo, codex_root=codex_root)
     with pytest.raises(GitRepoError, match="already exists"):
         mgr.create_for_run(task_id="task-1", run_id="run-abc123")
+
+
+def test_cancel_one_running_run_does_not_affect_another(tmp_path: Path) -> None:
+    codex_root = tmp_path / "codex"
+    codex_root.mkdir(parents=True)
+    backend = LocalBackend(codex_root)
+
+    def make_record(run_id: str, code: str) -> Path:
+        run_root = codex_root / "08_TELEMETRY" / "runs" / run_id
+        run_root.mkdir(parents=True, exist_ok=True)
+        lock_path = codex_root / "10_OVERSEER" / "locks" / f"{run_id}.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        meta_path = run_root / "meta.json"
+        record = ExecutionRecord(
+            run_id=run_id,
+            task_id=f"task-{run_id}",
+            status="queued",
+            command=[sys.executable, "-c", code],
+            cwd=str(tmp_path),
+            stdout_log=str(run_root / "stdout.log"),
+            stderr_log=str(run_root / "stderr.log"),
+            meta_path=str(meta_path),
+            lock_path=str(lock_path),
+            created_at="2020-01-01T00:00:00Z",
+        )
+        with file_lock(backend._events_lock_path(meta_path)):
+            backend._append_event(meta_path, "started", {"record": record.__dict__})
+        return meta_path
+
+    run_one = "run-cancel-target"
+    run_two = "run-keep-running"
+    meta_one = make_record(run_one, "import time; time.sleep(5)")
+    meta_two = make_record(run_two, "import time; time.sleep(0.5)")
+
+    t1 = threading.Thread(target=backend.run_worker, args=(meta_one,))
+    t2 = threading.Thread(target=backend.run_worker, args=(meta_two,))
+    t1.start()
+    t2.start()
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if backend.status(run_one).status == "running":
+            break
+        time.sleep(0.05)
+
+    canceling = backend.cancel(run_one)
+    assert canceling.status == "canceling"
+
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    assert backend.status(run_one).status == "canceled"
+    assert backend.status(run_two).status == "done"
+
+    event_types = [
+        json.loads(line)["type"]
+        for line in (meta_one.parent / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert event_types.index("cancel_requested") < event_types.index("canceled")

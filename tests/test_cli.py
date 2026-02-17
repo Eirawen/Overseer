@@ -141,3 +141,45 @@ def test_brief_prints_queued_and_escalated(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert "queued" in result.stdout.lower()
     assert "2" in result.stdout or "escalated" in result.stdout.lower()
+
+
+def test_run_cancel_command(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    init_git_repo(repo)
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+
+    run_id = "run-cancel-cli"
+    run_dir = repo / "codex" / "08_TELEMETRY" / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    meta = run_dir / "meta.json"
+    meta.write_text(
+        """{
+  "run_id": "run-cancel-cli",
+  "task_id": "task-1",
+  "status": "queued",
+  "command": [],
+  "cwd": ".",
+  "stdout_log": "stdout.log",
+  "stderr_log": "stderr.log",
+  "meta_path": "meta.json",
+  "lock_path": "lock",
+  "created_at": "2020-01-01T00:00:00Z",
+  "started_at": null,
+  "ended_at": null,
+  "exit_code": null,
+  "worker_pid": null,
+  "notes_enforced": false
+}
+""",
+        encoding="utf-8",
+    )
+    (run_dir / "events.jsonl").write_text(
+        "{\"type\":\"started\",\"at\":\"2020-01-01T00:00:00Z\",\"payload\":{\"record\":{\"run_id\":\"run-cancel-cli\",\"task_id\":\"task-1\",\"status\":\"queued\",\"command\":[],\"cwd\":\".\",\"stdout_log\":\"stdout.log\",\"stderr_log\":\"stderr.log\",\"meta_path\":\"meta.json\",\"lock_path\":\"lock\",\"created_at\":\"2020-01-01T00:00:00Z\",\"started_at\":null,\"ended_at\":null,\"exit_code\":null,\"worker_pid\":null,\"notes_enforced\":false}}}\n",
+        encoding="utf-8",
+    )
+
+    cancel_output = run_cli(repo, "run-cancel", "--run", run_id).stdout
+    assert f"{run_id} task=" in cancel_output
+    assert "status=canceled" in cancel_output

@@ -62,13 +62,15 @@ Goal: execution/run lifecycle is correct, concurrency-safe, observable, and test
 
 #### M0.1 Run model + lifecycle semantics
 - [ ] Define and document:
-  - [ ] Run states: queued, running, done, failed, canceled
+  - [x] Run states: queued, running, canceling, done, failed, canceled
   - [ ] Run identity: `run_id` uniqueness and idempotency expectations
   - [ ] Relationship: Task ↔ Runs (multiple runs per task allowed; task status should not be “single-run implied”)
   - [ ] Status transitions allowed/disallowed (state machine table)
+  - [x] requested -> canceling -> canceled transition is emitted as events and reflected in run status
+  - [x] cancel request returns `canceling` for active workers and only transitions to `canceled` on cooperative worker acknowledgment
 - [ ] Tests:
   - [ ] Transition legality tests (table-driven)
-  - [ ] Cancellation semantics tests (cancel queued vs running)
+  - [x] Cancellation semantics tests (cancel queued vs running)
   - [ ] Failure propagation tests (codex crash / nonzero exit / missing binary)
 
 #### M0.2 Concurrency guarantees (the part that forced tiny changes everywhere)
@@ -145,7 +147,7 @@ Goal: chat loop exists, doesn’t block, and can spawn runs + report status.
   - [ ] “run <task_id> …” or “do <objective>”
   - [ ] “status <run_id>”
   - [ ] “tail <run_id>”
-  - [ ] “cancel <run_id>”
+  - [x] “cancel <run_id>”
 - [ ] Implementation:
   - [ ] Chat handler calls execution backend to submit run
   - [ ] Returns immediately with run_id
