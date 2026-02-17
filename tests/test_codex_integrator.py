@@ -65,6 +65,12 @@ def test_integrator_status_delegates_to_backend(tmp_path: Path, monkeypatch: pyt
         '{"run_id":"run-fake123","task_id":"task-1","status":"done","command":[],"cwd":"","stdout_log":"","stderr_log":"","meta_path":"","lock_path":"","created_at":"2020-01-01T00:00:00Z","ended_at":"2020-01-01T00:01:00Z","exit_code":0}',
         encoding="utf-8",
     )
+    (store.codex_root / "08_TELEMETRY" / "runs" / run_id / "notes.md").write_text(
+        "- existing note\n", encoding="utf-8"
+    )
+    worker_notes = store.codex_root / "11_WORKERS" / "builder" / "NOTES.md"
+    worker_notes.parent.mkdir(parents=True, exist_ok=True)
+    worker_notes.write_text(f"- run={run_id}\n", encoding="utf-8")
     result = integrator.status(run_id)
     assert result.run_id == run_id
     assert result.status == "done"

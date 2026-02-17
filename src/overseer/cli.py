@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from overseer.codex_store import CodexStore
+from overseer.chat_server import OverseerChatService, serve_chat
 from overseer.execution.backend import LocalBackend
 from overseer.git_worktree import GitRepoError, resolve_git_root
 from overseer.human_api import HumanAPI
@@ -18,7 +19,7 @@ def _services(repo_root: Path | None = None):
     codex_store = CodexStore(root)
     task_store = TaskStore(codex_store)
     human_api = HumanAPI(codex_store)
-    backend = LocalBackend(codex_store.codex_root)
+    backend = LocalBackend(codex_store.codex_root, human_api=human_api)
     return codex_store, task_store, human_api, backend
 
 
@@ -100,6 +101,15 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     return cmd_run_agent(args)
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    codex_store, task_store, human_api, _ = _services(Path(args.repo_root))
+    codex_store.init_structure()
+    integrator = _build_integrator(codex_store.repo_root)
+    service = OverseerChatService(codex_store, task_store, integrator, human_api)
+    serve_chat(service, host=args.host, port=args.port)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="overseer")
     parser.add_argument("--repo-root", default=".")
@@ -137,6 +147,11 @@ def build_parser() -> argparse.ArgumentParser:
     worker_parser = subparsers.add_parser("execution-worker")
     worker_parser.add_argument("--meta", required=True)
     worker_parser.set_defaults(func=cmd_execution_worker)
+
+    serve_parser = subparsers.add_parser("serve")
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8765)
+    serve_parser.set_defaults(func=cmd_serve)
 
     return parser
 

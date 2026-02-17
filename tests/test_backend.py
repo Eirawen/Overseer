@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
-import pytest
 
 from overseer.execution.backend import (
     ExecutionRecord,
@@ -53,8 +53,11 @@ def test_status_returns_record(tmp_path: Path) -> None:
         ended_at="2020-01-01T00:01:00Z",
         exit_code=0,
     )
-    from dataclasses import asdict
     meta.write_text(json.dumps(asdict(record), indent=2) + "\n", encoding="utf-8")
+    (run_dir / "notes.md").write_text("- existing note\n", encoding="utf-8")
+    worker_notes = codex_root / "11_WORKERS" / "builder" / "NOTES.md"
+    worker_notes.parent.mkdir(parents=True, exist_ok=True)
+    worker_notes.write_text(f"- run={run_id}\n", encoding="utf-8")
     backend = LocalBackend(codex_root)
     got = backend.status(run_id)
     assert got.run_id == run_id
@@ -84,7 +87,6 @@ def test_cancel_already_done_returns_unchanged(tmp_path: Path) -> None:
         ended_at="2020-01-01T00:01:00Z",
         exit_code=0,
     )
-    from dataclasses import asdict
     backend = LocalBackend(codex_root)
     backend._write_record(meta, record)
     rec = backend.cancel(run_id)
