@@ -158,14 +158,17 @@ Goal: chat loop exists, doesn’t block, and can spawn runs + report status.
 
 #### M1.3 Escalation -> Human Queue loop is tight
 - [ ] When escalated:
-  - [ ] Human request is appended with strict schema
+  - [x] Human request is appended with strict schema
   - [ ] Chat shows: “escalated, see queue item X”
 - [ ] Human replies:
-  - [ ] Are captured and linked to the escalation
-  - [ ] Can trigger “resume run” or spawn a follow-up run
+  - [x] Are captured and linked to the escalation
+  - [x] Can trigger “resume run” or spawn a follow-up run (resume stub event)
+- [x] Human Queue CLI coverage: list/show/resolve with explicit validation errors
 - [ ] Tests:
-  - [ ] Escalation creates queue entry
-  - [ ] Reply updates escalation status + unblocks follow-up
+  - [x] Escalation creates queue entry
+  - [x] Reply updates escalation status + unblocks follow-up
+- [x] Idempotency policy: resolving the same Human Queue item twice is blocked with a clear error
+- [x] Schema hardening: validate required schema keys and enforce request status/WHY constraints
 
 #### M1.4 Codex auth + permissions prompts (make it robust)
 - [ ] Preflight step before run:
