@@ -196,28 +196,31 @@ Goal: the UI you described: left = “talk to Overseer” (optionally voice), ri
 We will build text-first UI, then optionally add voice polish. Voice is presentation; async orchestration is substance.
 
 #### M2.1 Choose UI shell (pragmatic)
-- [ ] Decide one:
+- [x] Decide one:
   - [ ] Tauri (Rust + web UI)
   - [ ] Electron
-  - [ ] Pure local web app (FastAPI + React) opened in browser
-- [ ] Criteria:
-  - [ ] Fast iteration
-  - [ ] Easy streaming logs
+  - [x] Pure local web app (FastAPI + React) opened in browser
+- [x] Criteria:
+  - [x] Fast iteration
+  - [x] Easy streaming logs
   - [ ] Local-first storage access
   - [ ] Packaging later is possible
+- [x] One-command local UI launcher (`./scripts/run-ui.sh`) documented for developer workflow
+- [x] TypeScript strict-mode scaffold (tsconfig + typed API helpers + typed React components)
+- [x] Frontend test schema baseline (Vitest + Testing Library + API/UI tests)
 
 #### M2.2 Core UI views
-- [ ] Chat pane (left):
-  - [ ] Send message
+- [x] Chat pane (left):
+  - [x] Send message
   - [ ] Show run cards (status, duration, links to logs, worktree path)
-  - [ ] Streaming updates / polling
-- [ ] Human Queue pane (right):
-  - [ ] List requests
-  - [ ] Click into request detail (strict schema rendering)
+  - [x] Streaming updates / polling
+- [x] Human Queue pane (right):
+  - [x] List requests
+  - [x] Click into request detail (strict schema rendering)
   - [ ] Reply box that enforces REPLY_FORMAT
   - [ ] Mark resolved
-- [ ] Runs pane (optional but useful):
-  - [ ] List runs
+- [x] Runs pane (optional but useful):
+  - [x] List runs
   - [ ] Filter by task / status
   - [ ] Open logs
 
@@ -330,7 +333,7 @@ Goal: prove it works on a real repo and real workflow.
 1) [ ] **Write/refresh `ROADMAP.md` (this file) into repo and link it from README**
 2) [ ] **Worker notes enforcement** (policy + minimal enforcement + prompt header)
 3) [x] **M1.2 Non-blocking spawn from chat** (prove async loop works end-to-end)
-4) [ ] **M2 UI shell decision + skeleton UI** (chat + queue panes with stub data)
+4) [x] **M2 UI shell decision + skeleton UI** (chat + queue panes with stub data)
 5) [ ] **Codex auth/permission preflight handling** (robust dev experience)
 
 ---
