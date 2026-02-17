@@ -119,6 +119,35 @@ def test_dummy_run_is_visible_in_runs_endpoint(tmp_path: Path) -> None:
         daemon.stop()
 
 
+def test_run_log_endpoint_returns_tail_and_validation(tmp_path: Path) -> None:
+    daemon, client, _, backend = _setup_daemon(tmp_path)
+    try:
+        run_id = "run-log-viewer"
+        _create_queued_record(backend, run_id=run_id, task_id="task-log-viewer")
+        run_dir = backend.runs_root / run_id
+        (run_dir / "stdout.log").write_text("line-1\nline-2\nline-3\n", encoding="utf-8")
+        (run_dir / "stderr.log").write_text("err-1\nerr-2\n", encoding="utf-8")
+
+        ok = client.get(f"/runs/{run_id}/logs?lines=2")
+        assert ok.status_code == 200
+        assert ok.json()["stdout"] == "line-2\nline-3"
+        assert ok.json()["stderr"] == "err-1\nerr-2"
+
+        too_many = client.get(f"/runs/{run_id}/logs?lines=999")
+        assert too_many.status_code == 400
+
+        non_positive = client.get(f"/runs/{run_id}/logs?lines=0")
+        assert non_positive.status_code == 400
+
+        max_lines = client.get(f"/runs/{run_id}/logs?lines=400")
+        assert max_lines.status_code == 200
+
+        missing = client.get("/runs/run-does-not-exist/logs")
+        assert missing.status_code == 404
+    finally:
+        daemon.stop()
+
+
 def test_get_unknown_run_returns_404(tmp_path: Path) -> None:
     daemon, client, _, _ = _setup_daemon(tmp_path)
     try:
@@ -157,14 +186,28 @@ def test_queue_resolve_endpoint_success_and_failures(tmp_path: Path) -> None:
 
         queued = client.get("/queue")
         assert queued.status_code == 200
-        assert queued.json()[0]["request_id"] == request.request_id
+        queue_payload = queued.json()[0]
+        assert queue_payload["request_id"] == request.request_id
+        assert queue_payload["type"] == "decision"
+        assert queue_payload["urgency"] == "high"
+        assert queue_payload["reply_format"]
 
         response = client.post(
             f"/queue/{request.request_id}/resolve",
-            json={"choice": request.options[0], "rationale": "approved"},
+            json={"choice": f"  {request.options[0]}  ", "rationale": "  approved  "},
         )
         assert response.status_code == 200
         assert response.json()["request_id"] == request.request_id
+
+        refreshed = human_api.show_request(request.request_id)
+        assert refreshed.status == "resolved"
+
+
+        empty_choice = client.post(
+            f"/queue/{request.request_id}/resolve",
+            json={"choice": "   ", "rationale": "approved"},
+        )
+        assert empty_choice.status_code == 400
 
         invalid = client.post(
             f"/queue/{request.request_id}/resolve",

@@ -217,12 +217,15 @@ We will build text-first UI, then optionally add voice polish. Voice is presenta
 - [x] Human Queue pane (right):
   - [x] List requests
   - [x] Click into request detail (strict schema rendering)
-  - [ ] Reply box that enforces REPLY_FORMAT
-  - [ ] Mark resolved
+  - [x] Reply box that enforces REPLY_FORMAT
+  - [x] Mark resolved
 - [x] Runs pane (optional but useful):
   - [x] List runs
   - [ ] Filter by task / status
-  - [ ] Open logs
+  - [x] Open logs
+- [x] Runs detail panel (selection, cancel action, copy-path affordances)
+- [x] Log viewer in UI tails stdout/stderr over events and primes with `/runs/{id}/logs`
+- [x] Queue resolve input hardening (trim/empty validation) and UI polling refresh for run/queue drift
 
 #### M2.3 UI ↔ backend bridge
 - [x] Add daemonized run-state poller that refreshes derived run state for API responses
@@ -236,7 +239,7 @@ We will build text-first UI, then optionally add voice polish. Voice is presenta
   - [x] `POST /queue/{id}/resolve`
   - [x] `WS /events` (JSON subscribe protocol with optional `run_id` filtering)
   - [x] Harden `/events` protocol validation (run_id sanitization, malformed payload handling, size limits)
-  - [ ] `GET /runs/{id}/logs`
+  - [x] `GET /runs/{id}/logs`
   - [ ] Add heartbeat/backpressure policy for long-lived event subscribers
 - [ ] Or, if staying fully local-process, a direct Python binding is OK initially—but API tends to simplify UI.
 

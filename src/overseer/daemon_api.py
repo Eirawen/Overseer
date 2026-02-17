@@ -15,6 +15,7 @@ from overseer.integrators import CodexIntegrator
 
 MAX_WS_MESSAGE_BYTES = 4096
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+MAX_LOG_LINES = 400
 
 
 class OverseerDaemon:
@@ -99,6 +100,15 @@ def _validate_run_id(run_id: str | None) -> str | None:
     return run_id
 
 
+def _tail_log(path: Path, line_count: int) -> str:
+    if not path.exists():
+        return ""
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    if line_count <= 0:
+        return ""
+    return "\n".join(lines[-line_count:])
+
+
 def create_app(daemon: OverseerDaemon) -> Any:
     from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
     from pydantic import BaseModel
@@ -139,6 +149,26 @@ def create_app(daemon: OverseerDaemon) -> Any:
             "exit_code": run.exit_code,
         }
 
+    @app.get("/runs/{run_id}/logs")
+    def get_run_logs(run_id: str, lines: int = 150) -> dict[str, str | int]:
+        if lines > MAX_LOG_LINES:
+            raise HTTPException(status_code=400, detail=f"lines must be <= {MAX_LOG_LINES}")
+        if lines < 1:
+            raise HTTPException(status_code=400, detail="lines must be >= 1")
+        try:
+            run = daemon.run(run_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"run not found: {run_id}") from exc
+
+        stdout_log = _tail_log(Path(run["stdout_log"]), line_count=lines)
+        stderr_log = _tail_log(Path(run["stderr_log"]), line_count=lines)
+        return {
+            "run_id": run_id,
+            "lines": lines,
+            "stdout": stdout_log,
+            "stderr": stderr_log,
+        }
+
     @app.get("/queue")
     def list_queue() -> list[dict[str, Any]]:
         requests = daemon.human_api.list_requests()
@@ -151,19 +181,30 @@ def create_app(daemon: OverseerDaemon) -> Any:
                 "type": req.request_type,
                 "urgency": req.urgency,
                 "context": req.context,
+                "time_required_min": req.time_required_min,
                 "options": req.options,
+                "recommendation": req.recommendation,
+                "why": req.why,
+                "unblocks": req.unblocks,
+                "reply_format": req.reply_format,
             }
             for req in requests
         ]
 
     @app.post("/queue/{request_id}/resolve")
     def resolve_queue_item(request_id: str, payload: QueueResolutionPayload) -> dict[str, str]:
+        choice = payload.choice.strip()
+        rationale = payload.rationale.strip()
+        if not choice:
+            raise HTTPException(status_code=400, detail="choice cannot be empty")
+        if not rationale:
+            raise HTTPException(status_code=400, detail="rationale cannot be empty")
         try:
             resolution_path = _resolve_queue(
                 daemon,
                 request_id=request_id,
-                choice=payload.choice,
-                rationale=payload.rationale,
+                choice=choice,
+                rationale=rationale,
                 artifact_path=payload.artifact_path,
             )
         except ValueError as exc:
