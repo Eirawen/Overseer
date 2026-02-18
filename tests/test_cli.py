@@ -13,6 +13,7 @@ def run_cli(
 ) -> subprocess.CompletedProcess[str]:
     run_env = os.environ.copy()
     run_env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    run_env.setdefault("OVERSEER_EXECUTION_BACKEND", "local")
     if env:
         run_env.update(env)
     return subprocess.run(
@@ -311,6 +312,7 @@ def test_chat_accepts_commands_while_run_active(tmp_path: Path) -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["OVERSEER_EXECUTION_BACKEND"] = "local"
 
     proc = subprocess.run(
         [sys.executable, "-m", "overseer", "--repo-root", str(repo), "chat"],
@@ -344,7 +346,7 @@ def test_chat_reports_command_errors_and_continues(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         check=False,
-        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"), "OVERSEER_EXECUTION_BACKEND": "local"},
         timeout=15,
     )
 
