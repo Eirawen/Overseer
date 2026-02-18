@@ -28,9 +28,6 @@ npm --prefix ui run build
 
 ## The Premise
 
-Overseer is not a tool.
-
-It is an operating system for a human working with agentic AI at the frontier of capability.
 
 We are operating in a moment where large language models are no longer mere assistants. They are capable of:
 
@@ -44,11 +41,9 @@ We are operating in a moment where large language models are no longer mere assi
 - Maintaining memory across sessions
 - Acting with autonomy when instructed to do so
 
-The bottleneck is no longer typing speed.
+The bottleneck is no longer typing speed, it's cognitive orchestration.
 
-The bottleneck is cognitive orchestration.
-
-Overseer exists to eliminate the human as the message bus.
+This exists to eliminate the human as the message bus and wire between platforms. 
 
 ---
 
@@ -88,11 +83,7 @@ Without structure, agentic systems degrade into:
 - Over-escalation
 - Under-escalation
 
-Without philosophy, speed amplifies chaos.
-
-Without governance, recursion becomes waste.
-
-Without continuity, identity fractures.
+Without philosophy, speed amplifies chaos. Without governance, recursion becomes waste. Without continuity, threads fracture.
 
 ---
 
@@ -122,12 +113,6 @@ Overseer makes structured requests:
 - External action calls
 - Strategic clarifications
 
-No rambling chat.
-
-No emotional labor.
-
-Only high-leverage calls.
-
 ---
 
 ### 3. Durable Identity
@@ -141,7 +126,7 @@ Two memory layers exist:
 1) Deterministic project state
 2) Conversational continuity (compressed drift)
 
-Successor Overseers inherit identity through handoff ceremony, not raw transcript copying.
+Successor Overseers inherit identity through handoff ceremony. 
 
 ---
 
@@ -156,8 +141,6 @@ Termination rules are enforced.
 Auto-merge occurs when quality gates are satisfied.
 
 Disagreement beyond thresholds escalates to human.
-
-Infinite recursion is prohibited.
 
 ---
 
@@ -184,10 +167,6 @@ Overseer must survive:
 - Philosophical drift
 - Strategic pivots
 
-Handoff is a formal ceremony.
-
-Behavioral alignment transfer is mandatory.
-
 ---
 
 ## What Overseer v0 Does
@@ -211,7 +190,6 @@ Behavioral alignment transfer is mandatory.
 - Global capital strategy
 - UI dashboards
 
-Those are extensions.
 
 ---
 
@@ -261,23 +239,6 @@ Overseer considers these catastrophic:
 - Escalation spam
 - Strategic incoherence
 
-Guardrails exist specifically to prevent these.
-
----
-
-## The Guiding Star
-
-The goal is compression.
-
-10 hours of human work should produce 100 hours of progress.
-
-The human should experience:
-
-- A structured morning sync.
-- Ranked manual task stream.
-- Autonomous feature build in parallel.
-- Interrupts only when justified.
-- Continuous progress without micromanagement.
 
 ---
 
