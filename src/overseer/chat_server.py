@@ -293,16 +293,31 @@ class OverseerHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        if parsed.path != "/message":
+        if parsed.path not in {"/message", "/command"}:
             self._send_json({"error": "not found"}, code=404)
             return
+
         content_length = int(self.headers.get("Content-Length", "0"))
-        payload = json.loads(self.rfile.read(content_length) or b"{}")
+        raw_payload = self.rfile.read(content_length) or b"{}"
+        try:
+            payload = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            self._send_json({"error": "invalid json"}, code=400)
+            return
+
         text = str(payload.get("text", "")).strip()
         if not text:
             self._send_json({"error": "text is required"}, code=400)
             return
-        result = self.service.handle_message(text)
+
+        try:
+            if parsed.path == "/message":
+                result = self.service.handle_message(text)
+            else:
+                result = self.service.handle_command(text)
+        except (FileNotFoundError, ValueError) as exc:
+            self._send_json({"error": str(exc)}, code=400)
+            return
         self._send_json(result)
 
     def do_GET(self) -> None:  # noqa: N802
