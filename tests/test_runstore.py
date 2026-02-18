@@ -75,3 +75,36 @@ def test_cancel_marks_canceled_and_records_event(tmp_path: Path) -> None:
     events = events_path.read_text(encoding="utf-8")
     assert "cancel_requested" in events
     assert "canceled" in events
+
+
+def test_create_run_duplicate_raises_value_error(tmp_path: Path) -> None:
+    codex_root = tmp_path / "codex"
+    codex_root.mkdir(parents=True)
+    store = SQLiteRunStore(codex_root)
+    submission = RunSubmission(
+        run_id="run-dup-1",
+        task_id="task-1",
+        backend_type="local",
+        worktree_path=str(tmp_path),
+        meta_json={"meta_path": str(codex_root / "08_TELEMETRY" / "runs" / "run-dup-1" / "meta.json")},
+    )
+    store.create_run(submission)
+
+    import pytest
+
+    with pytest.raises(ValueError, match="run already exists"):
+        store.create_run(submission)
+
+
+def test_runstore_schema_has_status_indexes(tmp_path: Path) -> None:
+    codex_root = tmp_path / "codex"
+    codex_root.mkdir(parents=True)
+    store = SQLiteRunStore(codex_root)
+
+    import sqlite3
+
+    with sqlite3.connect(store.db_path) as conn:
+        indexes = {row[1] for row in conn.execute("PRAGMA index_list('runs')").fetchall()}
+
+    assert "runs_status_idx" in indexes
+    assert "runs_status_heartbeat_idx" in indexes

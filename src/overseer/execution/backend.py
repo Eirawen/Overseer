@@ -138,16 +138,19 @@ class LocalBackend:
     def _write_record(self, path: Path, record: ExecutionRecord) -> None:
         with file_lock(self._meta_lock_path(path)):
             if not self._run_exists(record.run_id):
-                self.run_store.create_run(
-                    RunSubmission(
-                        run_id=record.run_id,
-                        task_id=record.task_id,
-                        backend_type=self.__class__.__name__.replace("Backend", "").lower(),
-                        worktree_path=record.cwd,
-                        pid=record.worker_pid,
-                        meta_json=asdict(record),
+                try:
+                    self.run_store.create_run(
+                        RunSubmission(
+                            run_id=record.run_id,
+                            task_id=record.task_id,
+                            backend_type=self.__class__.__name__.replace("Backend", "").lower(),
+                            worktree_path=record.cwd,
+                            pid=record.worker_pid,
+                            meta_json=asdict(record),
+                        )
                     )
-                )
+                except ValueError:
+                    pass
             self.run_store.update_status(
                 record.run_id,
                 record.status,

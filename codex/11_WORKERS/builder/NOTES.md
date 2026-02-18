@@ -50,3 +50,5 @@
   - How to test: `pytest -q tests/test_celery_backend.py tests/test_cli.py tests/test_backend.py`; run `celery -A overseer.execution.celery_app:celery_app worker --loglevel=INFO` with `REDIS_URL` for end-to-end queue execution.
 
 - [2026-02-18T05:40:34Z] Implemented SQLite-backed RunStore shared by Local/Celery backends, added runs list/show/cancel/reconcile CLI subcommands, wired heartbeat+reconcile+durable cancel semantics, and added persistence/reconcile/cancel tests. Next: monitor full-suite runtime in CI because local environment terminates long pytest runs.
+
+- [2026-02-18T07:43:40Z] Follow-up hardening: made duplicate run creation explicit (raises ValueError instead of silent ignore) and added SQLite indexes for status/reconcile/event lookups (`runs_status_idx`, `runs_status_heartbeat_idx`, `run_events_run_id_idx`), with tests for duplicate semantics and index presence.

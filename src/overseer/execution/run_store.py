@@ -115,6 +115,9 @@ class SQLiteRunStore:
                 )
                 """
             )
+            conn.execute("CREATE INDEX IF NOT EXISTS runs_status_idx ON runs(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS runs_status_heartbeat_idx ON runs(status, heartbeat_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS run_events_run_id_idx ON run_events(run_id)")
 
     def _row_to_run(self, row: sqlite3.Row) -> StoredRun:
         meta = row["meta_json"]
@@ -135,29 +138,32 @@ class SQLiteRunStore:
 
     def create_run(self, submission: RunSubmission) -> str:
         now = _utc_now()
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO runs (
-                    run_id, task_id, status, created_at, updated_at, heartbeat_at,
-                    backend_type, worktree_path, pid, exit_code, failure_reason, meta_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    submission.run_id,
-                    submission.task_id,
-                    "queued",
-                    now,
-                    now,
-                    now,
-                    submission.backend_type,
-                    submission.worktree_path,
-                    submission.pid,
-                    None,
-                    None,
-                    json.dumps(submission.meta_json) if submission.meta_json else None,
-                ),
-            )
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO runs (
+                        run_id, task_id, status, created_at, updated_at, heartbeat_at,
+                        backend_type, worktree_path, pid, exit_code, failure_reason, meta_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        submission.run_id,
+                        submission.task_id,
+                        "queued",
+                        now,
+                        now,
+                        now,
+                        submission.backend_type,
+                        submission.worktree_path,
+                        submission.pid,
+                        None,
+                        None,
+                        json.dumps(submission.meta_json) if submission.meta_json else None,
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"run already exists: {submission.run_id}") from exc
         return submission.run_id
 
     def get_run(self, run_id: str) -> StoredRun:
