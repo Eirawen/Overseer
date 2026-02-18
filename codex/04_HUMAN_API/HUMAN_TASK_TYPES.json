@@ -1,0 +1,31 @@
+{
+  "types": [
+    {
+      "id": "decision",
+      "description": "General tradeoff and approval decisions.",
+      "default_type": "decision",
+      "default_urgency": "high",
+      "required_fields": ["CONTEXT", "OPTIONS", "RECOMMENDATION", "UNBLOCKS", "REPLY_FORMAT"],
+      "when_to_use": "Use when the agent reaches a true fork and needs a human choice to proceed.",
+      "examples": ["Pick between architecture A vs B", "Approve rollout strategy"]
+    },
+    {
+      "id": "game_asset_request",
+      "description": "Requests for externally provided game or media assets.",
+      "default_type": "external_action",
+      "default_urgency": "medium",
+      "required_fields": ["asset_name", "target_format", "style_constraints", "deadline"],
+      "when_to_use": "Use when the task is blocked on a human creating/procuring an asset.",
+      "examples": ["Need icon set for inventory UI", "Need voice line recording for tutorial"]
+    },
+    {
+      "id": "cli_direction",
+      "description": "Repo policy and behavior decisions for CLI or backend tooling.",
+      "default_type": "design_direction",
+      "default_urgency": "high",
+      "required_fields": ["target_command", "expected_behavior", "compat_constraints"],
+      "when_to_use": "Use when command semantics are ambiguous and product intent is required.",
+      "examples": ["Should command default to dry-run?", "How should flags interact?"]
+    }
+  ]
+}

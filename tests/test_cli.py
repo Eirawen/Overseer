@@ -211,6 +211,12 @@ def test_human_commands_list_show_resolve(tmp_path: Path) -> None:
     show_output = run_cli(repo, "human", "show", "--id", request_id).stdout
     assert "REQUEST_ID:" in show_output
 
+    validate_output = run_cli(repo, "human-types", "validate").stdout
+    assert "valid" in validate_output
+
+    types_output = run_cli(repo, "human-types", "list").stdout
+    assert "decision" in types_output
+
     resolve_output = run_cli(
         repo,
         "human",
@@ -238,6 +244,21 @@ def test_human_commands_list_show_resolve(tmp_path: Path) -> None:
     )
     assert second.returncode != 0
     assert "already resolved" in second.stderr
+
+
+def test_human_types_validate_reports_config_errors(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    init_git_repo(repo)
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+
+    types_config = repo / "codex" / "04_HUMAN_API" / "HUMAN_TASK_TYPES.json"
+    types_config.write_text('{"types":[{"id":"decision"}]}\n', encoding="utf-8")
+
+    result = run_cli(repo, "human-types", "validate", check=False)
+    assert result.returncode != 0
+    assert "must be a non-empty string" in result.stderr
 
 
 

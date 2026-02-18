@@ -25,6 +25,7 @@ _REQUIRED_SCHEMA_KEYS = {
     "UNBLOCKS:",
     "REPLY_FORMAT:",
 }
+_DEFAULT_TASK_TYPE_ID = "decision"
 
 
 @dataclass(frozen=True)
@@ -53,12 +54,24 @@ class HumanRequestSchema:
     allowed_urgencies: set[str]
 
 
+@dataclass(frozen=True)
+class HumanTaskType:
+    id: str
+    description: str
+    default_type: str
+    default_urgency: str
+    required_fields: list[str]
+    when_to_use: str
+    examples: list[str]
+
+
 class HumanAPI:
     def __init__(self, codex_store: CodexStore) -> None:
         self.codex_store = codex_store
         self.human_api_root = codex_store.codex_root / "04_HUMAN_API"
         self.queue_file = self.human_api_root / "HUMAN_QUEUE.md"
         self.schema_file = self.human_api_root / "REQUEST_SCHEMA.md"
+        self.task_types_file = self.human_api_root / "HUMAN_TASK_TYPES.json"
         self.requests_dir = self.human_api_root / "requests"
         self._queue_lock = codex_store.codex_root / "10_OVERSEER" / "locks" / "human_queue.lock"
 
@@ -90,12 +103,109 @@ class HumanAPI:
 
         return HumanRequestSchema(allowed_types=allowed_types, allowed_urgencies=allowed_urgencies)
 
+    def validate_task_types(self) -> list[HumanTaskType]:
+        schema = self._load_schema()
+        if not self.task_types_file.exists():
+            raise ValueError(f"missing human task types config: {self.task_types_file}")
+
+        try:
+            raw = json.loads(self.task_types_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid JSON in {self.task_types_file.name}: {exc.msg}") from exc
+
+        if not isinstance(raw, dict):
+            raise ValueError(f"{self.task_types_file.name}: root must be an object")
+        raw_types = raw.get("types")
+        if not isinstance(raw_types, list) or not raw_types:
+            raise ValueError(f"{self.task_types_file.name}: 'types' must be a non-empty array")
+
+        allowed_type_values = schema.allowed_types
+        allowed_urgency_values = schema.allowed_urgencies
+        seen_ids: set[str] = set()
+        validated: list[HumanTaskType] = []
+
+        for idx, entry in enumerate(raw_types):
+            loc = f"types[{idx}]"
+            if not isinstance(entry, dict):
+                raise ValueError(f"{loc}: each item must be an object")
+
+            def _required_text(key: str) -> str:
+                value = entry.get(key)
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"{loc}.{key}: must be a non-empty string")
+                return value.strip()
+
+            task_type_id = _required_text("id")
+            if task_type_id in seen_ids:
+                raise ValueError(f"{loc}.id: duplicate id '{task_type_id}'")
+            seen_ids.add(task_type_id)
+
+            default_type = _required_text("default_type")
+            if default_type not in allowed_type_values:
+                raise ValueError(
+                    f"{loc}.default_type: invalid value '{default_type}', expected one of {sorted(allowed_type_values)}"
+                )
+
+            default_urgency = _required_text("default_urgency")
+            if default_urgency not in allowed_urgency_values:
+                raise ValueError(
+                    f"{loc}.default_urgency: invalid value '{default_urgency}', expected one of {sorted(allowed_urgency_values)}"
+                )
+
+            required_fields = entry.get("required_fields")
+            if (
+                not isinstance(required_fields, list)
+                or not required_fields
+                or any(not isinstance(item, str) or not item.strip() for item in required_fields)
+            ):
+                raise ValueError(
+                    f"{loc}.required_fields: must be a non-empty array of non-empty strings"
+                )
+
+            examples = entry.get("examples", [])
+            if not isinstance(examples, list) or any(
+                not isinstance(item, str) or not item.strip() for item in examples
+            ):
+                raise ValueError(f"{loc}.examples: must be an array of non-empty strings")
+
+            validated.append(
+                HumanTaskType(
+                    id=task_type_id,
+                    description=_required_text("description"),
+                    default_type=default_type,
+                    default_urgency=default_urgency,
+                    required_fields=[field.strip() for field in required_fields],
+                    when_to_use=_required_text("when_to_use"),
+                    examples=[example.strip() for example in examples],
+                )
+            )
+
+        if _DEFAULT_TASK_TYPE_ID not in seen_ids:
+            raise ValueError(
+                f"{self.task_types_file.name}: must include a '{_DEFAULT_TASK_TYPE_ID}' task type"
+            )
+        return validated
+
+    def list_task_types(self) -> list[HumanTaskType]:
+        return sorted(self.validate_task_types(), key=lambda item: item.id)
+
+    def _resolve_task_type(self, task_type_id: str | None) -> HumanTaskType:
+        selected_id = (task_type_id or "").strip() or _DEFAULT_TASK_TYPE_ID
+        types = {entry.id: entry for entry in self.validate_task_types()}
+        selected = types.get(selected_id)
+        if selected is None:
+            raise ValueError(
+                f"unknown human task type '{selected_id}'. Available: {', '.join(sorted(types))}"
+            )
+        return selected
+
     def append_request(
         self,
         task: dict,
         reason: str,
         diagnosis_packet: dict | None = None,
         run_id: str | None = None,
+        task_type_id: str | None = None,
     ) -> str:
         self.ensure_queue()
         diagnosis_packet = diagnosis_packet or {}
@@ -103,6 +213,8 @@ class HumanAPI:
         request_id = f"hr-{uuid4().hex[:12]}"
         now = datetime.now(timezone.utc).isoformat()
         task_id = task.get("id")
+        task_type = self._resolve_task_type(task_type_id or task.get("human_task_type"))
+        deliverables = "".join(f"  - {field}\n" for field in task_type.required_fields)
 
         request = (
             f"REQUEST_ID: {request_id}\n"
@@ -111,10 +223,14 @@ class HumanAPI:
             "STATUS: pending\n"
             f"CREATED_AT: {now}\n"
             "HUMAN_REQUEST:\n"
-            "TYPE: decision\n"
-            "URGENCY: high\n"
+            f"TYPE: {task_type.default_type}\n"
+            f"URGENCY: {task_type.default_urgency}\n"
             "TIME_REQUIRED_MIN: 15\n"
             f"CONTEXT: Task {task_id} escalated.\n"
+            f"TASK_TYPE_ID: {task_type.id}\n"
+            f"TASK_TYPE_WHEN_TO_USE: {task_type.when_to_use}\n"
+            "DELIVERABLES:\n"
+            f"{deliverables}"
             "OPTIONS:\n"
             "  - Approve latest approach\n"
             "  - Redirect implementation approach\n"

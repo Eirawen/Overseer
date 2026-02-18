@@ -3,6 +3,7 @@
 ## Setup
 
 - First launch guide: [`docs/CONFIGURING_OVERSEER.md`](docs/CONFIGURING_OVERSEER.md)
+- Human escalation task-type presets: `codex/04_HUMAN_API/HUMAN_TASK_TYPES.json`
 
 ## Local UI MVP (scaffold)
 
