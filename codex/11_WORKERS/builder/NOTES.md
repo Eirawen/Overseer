@@ -52,3 +52,7 @@
 - [2026-02-18T05:40:34Z] Implemented SQLite-backed RunStore shared by Local/Celery backends, added runs list/show/cancel/reconcile CLI subcommands, wired heartbeat+reconcile+durable cancel semantics, and added persistence/reconcile/cancel tests. Next: monitor full-suite runtime in CI because local environment terminates long pytest runs.
 
 - [2026-02-18T07:43:40Z] Follow-up hardening: made duplicate run creation explicit (raises ValueError instead of silent ignore) and added SQLite indexes for status/reconcile/event lookups (`runs_status_idx`, `runs_status_heartbeat_idx`, `run_events_run_id_idx`), with tests for duplicate semantics and index presence.
+
+- [2026-02-18T08:06:22+00:00] Agent-15 started task: adding first-class HUMAN_TASK_TYPES config + validation, HumanAPI integration, CLI commands, tests/docs updates.
+- [2026-02-18T08:08:38+00:00] Implemented HumanTaskTypes system: added codex/04_HUMAN_API/HUMAN_TASK_TYPES.json defaults, validation+listing in HumanAPI, typed escalation defaults in append_request, and new CLI commands `human-types validate|list`. Added tests for config errors/selection behavior and CLI coverage; updating docs now.
+- [2026-02-18T08:11:13+00:00] Validation pass complete: `ruff check src tests` and `pytest -q tests/test_human_api.py tests/test_cli.py` green. Full `pytest -q` repeatedly terminated by environment with exit -1 after partial progress dots.

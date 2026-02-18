@@ -52,6 +52,40 @@ class CodexStore:
         self._ensure_file("02_MEMORY/DECISION_LOG.md", "# Decision Log\n")
         self._ensure_file("03_WORK/TASK_GRAPH.jsonl", "")
         self._ensure_file("04_HUMAN_API/REQUEST_SCHEMA.md", "# Human Request Schema (strict)\n\nHUMAN_REQUEST:\nTYPE: {design_direction | decision | external_action | clarification | review}\nURGENCY: {low | medium | high | interrupt_now}\nTIME_REQUIRED_MIN: <int>\nCONTEXT: <short>\nOPTIONS:\n  - <option A>\n  - <option B>\nRECOMMENDATION: <one of options or custom>\nWHY: <1-3 bullets>\nUNBLOCKS: <what changes after you answer>\nREPLY_FORMAT: <exact expected reply>\n")
+        self._ensure_file(
+            "04_HUMAN_API/HUMAN_TASK_TYPES.json",
+            '{\n'
+            '  "types": [\n'
+            '    {\n'
+            '      "id": "decision",\n'
+            '      "description": "General tradeoff and approval decisions.",\n'
+            '      "default_type": "decision",\n'
+            '      "default_urgency": "high",\n'
+            '      "required_fields": ["CONTEXT", "OPTIONS", "RECOMMENDATION", "UNBLOCKS", "REPLY_FORMAT"],\n'
+            '      "when_to_use": "Use when the agent reaches a true fork and needs a human choice to proceed.",\n'
+            '      "examples": ["Pick between architecture A vs B", "Approve rollout strategy"]\n'
+            '    },\n'
+            '    {\n'
+            '      "id": "game_asset_request",\n'
+            '      "description": "Requests for externally provided game or media assets.",\n'
+            '      "default_type": "external_action",\n'
+            '      "default_urgency": "medium",\n'
+            '      "required_fields": ["asset_name", "target_format", "style_constraints", "deadline"],\n'
+            '      "when_to_use": "Use when the task is blocked on a human creating/procuring an asset.",\n'
+            '      "examples": ["Need icon set for inventory UI", "Need voice line recording for tutorial"]\n'
+            '    },\n'
+            '    {\n'
+            '      "id": "cli_direction",\n'
+            '      "description": "Repo policy and behavior decisions for CLI or backend tooling.",\n'
+            '      "default_type": "design_direction",\n'
+            '      "default_urgency": "high",\n'
+            '      "required_fields": ["target_command", "expected_behavior", "compat_constraints"],\n'
+            '      "when_to_use": "Use when command semantics are ambiguous and product intent is required.",\n'
+            '      "examples": ["Should command default to dry-run?", "How should flags interact?"]\n'
+            '    }\n'
+            '  ]\n'
+            '}\n',
+        )
         self._ensure_file("04_HUMAN_API/HUMAN_QUEUE.md", EMPTY_HUMAN_QUEUE)
         self._ensure_file("05_AGENTS/TERMINATION.md", "# Termination & Recursion Rules\n")
         self._ensure_file("08_TELEMETRY/RUN_LOG.jsonl", "")

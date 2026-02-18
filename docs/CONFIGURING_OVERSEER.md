@@ -80,6 +80,34 @@ export OVERSEER_EXECUTION_BACKEND=local
 - Codex CLI may prompt for repository permissions or CLI updates.
 - Overseer surfaces blocked prompts as HumanAPI escalations; resolve these manually in your terminal session and then re-run.
 
+## Custom Human task types
+
+Overseer reads request-type presets from:
+
+- `codex/04_HUMAN_API/HUMAN_TASK_TYPES.json`
+
+This file is repo-owned so each project can define domain-specific human escalations (for example,
+game-asset requests vs CLI product-direction requests).
+
+Each entry in `types` must include:
+
+- `id`
+- `description`
+- `default_type` (must match `REQUEST_SCHEMA.md` TYPE enum)
+- `default_urgency` (must match `REQUEST_SCHEMA.md` URGENCY enum)
+- `required_fields` (non-empty checklist)
+- `when_to_use`
+- `examples` (optional)
+
+Validate and inspect config via CLI:
+
+```bash
+overseer --repo-root . human-types validate
+overseer --repo-root . human-types list
+```
+
+If a task type is not provided, Overseer defaults to the `decision` entry.
+
 ## Durable run persistence
 
 Overseer persists run state in SQLite at:
@@ -93,4 +121,3 @@ You can reconcile stale running jobs with:
 ```bash
 overseer --repo-root . runs reconcile --stale-after-seconds 300
 ```
-

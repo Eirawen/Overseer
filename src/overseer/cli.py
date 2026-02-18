@@ -133,7 +133,6 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     return cmd_run_agent(args)
 
 
-
 def cmd_human_list(args: argparse.Namespace) -> int:
     _, _, human_api, _ = _services(Path(args.repo_root))
     for request in human_api.list_requests():
@@ -163,6 +162,23 @@ def cmd_human_resolve(args: argparse.Namespace) -> int:
     )
     print(f"resolved {args.id} -> {resolution_path}")
     return 0
+
+
+def cmd_human_types_validate(args: argparse.Namespace) -> int:
+    _, _, human_api, _ = _services(Path(args.repo_root))
+    task_types = human_api.validate_task_types()
+    print(f"valid {len(task_types)} human task types")
+    return 0
+
+
+def cmd_human_types_list(args: argparse.Namespace) -> int:
+    _, _, human_api, _ = _services(Path(args.repo_root))
+    for item in human_api.list_task_types():
+        print(
+            f"{item.id} default_TYPE={item.default_type} default_URGENCY={item.default_urgency} :: {item.description}"
+        )
+    return 0
+
 
 def cmd_serve(args: argparse.Namespace) -> int:
     codex_store, _, human_api, backend = _services(Path(args.repo_root))
@@ -281,6 +297,17 @@ def build_parser() -> argparse.ArgumentParser:
     human_resolve_parser.add_argument("--rationale", required=True)
     human_resolve_parser.add_argument("--artifact-path")
     human_resolve_parser.set_defaults(func=cmd_human_resolve)
+
+    human_types_parser = subparsers.add_parser("human-types")
+    human_types_subparsers = human_types_parser.add_subparsers(
+        dest="human_types_command", required=True
+    )
+
+    human_types_validate_parser = human_types_subparsers.add_parser("validate")
+    human_types_validate_parser.set_defaults(func=cmd_human_types_validate)
+
+    human_types_list_parser = human_types_subparsers.add_parser("list")
+    human_types_list_parser.set_defaults(func=cmd_human_types_list)
 
     worker_parser = subparsers.add_parser("execution-worker")
     worker_parser.add_argument("--run-id", required=True)

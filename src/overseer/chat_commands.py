@@ -42,7 +42,6 @@ def parse_chat_command(text: str) -> ChatCommand:
         if action == "list" and len(tokens) == 2:
             return ChatCommand(group="queue", action="list")
         if action == "resolve" and len(tokens) >= 5:
-            request_id = tokens[2]
             if "--choice" not in tokens or "--rationale" not in tokens:
                 raise ValueError(
                     "usage: /queue resolve <request_id> --choice <choice> --rationale <rationale> [--artifact-path <path>]"
@@ -53,4 +52,3 @@ def parse_chat_command(text: str) -> ChatCommand:
         )
 
     raise ValueError(f"unknown command: {tokens[0]}")
-

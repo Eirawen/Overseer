@@ -27,6 +27,29 @@ SCHEMA_TEXT = (
     "REPLY_FORMAT: <exact expected reply>\n"
 )
 
+TASK_TYPES_TEXT = {
+    "types": [
+        {
+            "id": "decision",
+            "description": "General tradeoff and approval decisions.",
+            "default_type": "decision",
+            "default_urgency": "high",
+            "required_fields": ["CONTEXT", "OPTIONS", "RECOMMENDATION"],
+            "when_to_use": "Use for unresolved forks.",
+            "examples": ["Approve a migration strategy"],
+        },
+        {
+            "id": "game_asset_request",
+            "description": "Request a game asset from a human.",
+            "default_type": "external_action",
+            "default_urgency": "medium",
+            "required_fields": ["asset_name", "target_format"],
+            "when_to_use": "Use when blocked on an externally created asset.",
+            "examples": ["Need icon for pause menu"],
+        },
+    ]
+}
+
 
 def _store_with_codex(tmp_path: Path) -> tuple[CodexStore, HumanAPI]:
     repo = tmp_path / "repo"
@@ -36,6 +59,10 @@ def _store_with_codex(tmp_path: Path) -> tuple[CodexStore, HumanAPI]:
     (codex / "04_HUMAN_API").mkdir(parents=True)
     (codex / "10_OVERSEER" / "locks").mkdir(parents=True, exist_ok=True)
     (codex / "04_HUMAN_API" / "REQUEST_SCHEMA.md").write_text(SCHEMA_TEXT, encoding="utf-8")
+    (codex / "04_HUMAN_API" / "HUMAN_TASK_TYPES.json").write_text(
+        json.dumps(TASK_TYPES_TEXT, indent=2),
+        encoding="utf-8",
+    )
     store = CodexStore(repo)
     store.codex_root = codex
     return store, HumanAPI(store)
@@ -94,6 +121,23 @@ def test_append_and_parse_request_validates_schema(tmp_path: Path) -> None:
     assert request.urgency == "high"
 
 
+def test_append_request_uses_selected_task_type_defaults(tmp_path: Path) -> None:
+    _, api = _store_with_codex(tmp_path)
+    api.ensure_queue()
+    request_text = api.append_request(
+        {"id": "task-game", "human_task_type": "game_asset_request"},
+        "blocked on art",
+    )
+
+    assert "TYPE: external_action" in request_text
+    assert "URGENCY: medium" in request_text
+    assert "TASK_TYPE_ID: game_asset_request" in request_text
+
+    request = api.list_requests()[0]
+    assert request.request_type == "external_action"
+    assert request.urgency == "medium"
+
+
 def test_parse_request_fails_with_useful_error(tmp_path: Path) -> None:
     _, api = _store_with_codex(tmp_path)
     api.ensure_queue()
@@ -139,6 +183,29 @@ def test_schema_validation_requires_all_keys(tmp_path: Path) -> None:
     api.schema_file.write_text("TYPE: {decision}\nURGENCY: {high}\n", encoding="utf-8")
     with pytest.raises(ValueError, match="missing required keys"):
         api._load_schema()
+
+
+def test_task_types_validation_catches_friendly_errors(tmp_path: Path) -> None:
+    _, api = _store_with_codex(tmp_path)
+    api.task_types_file.write_text(
+        json.dumps(
+            {
+                "types": [
+                    {
+                        "id": "decision",
+                        "description": "ok",
+                        "default_type": "decision",
+                        "default_urgency": "urgent",
+                        "required_fields": ["x"],
+                        "when_to_use": "when",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="default_urgency"):
+        api.validate_task_types()
 
 
 def test_resolve_request_writes_resolution_and_events(tmp_path: Path) -> None:
