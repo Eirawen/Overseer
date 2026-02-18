@@ -48,3 +48,5 @@
 - [2026-02-18T02:05:00Z] Task 13 Celery hardening follow-up: promoted Celery/Redis to first-class dependencies, switched service wiring to Celery backend by default (local override via `OVERSEER_EXECUTION_BACKEND=local`), registered a real Celery app/task module, and added cancellation revoke coverage.
   - Why: previous patch left Celery as a mostly-optional path and did not fully switch runtime behavior to Celery-first execution.
   - How to test: `pytest -q tests/test_celery_backend.py tests/test_cli.py tests/test_backend.py`; run `celery -A overseer.execution.celery_app:celery_app worker --loglevel=INFO` with `REDIS_URL` for end-to-end queue execution.
+
+- [2026-02-18T05:40:34Z] Implemented SQLite-backed RunStore shared by Local/Celery backends, added runs list/show/cancel/reconcile CLI subcommands, wired heartbeat+reconcile+durable cancel semantics, and added persistence/reconcile/cancel tests. Next: monitor full-suite runtime in CI because local environment terminates long pytest runs.

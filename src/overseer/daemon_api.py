@@ -9,6 +9,13 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+try:
+    from fastapi import WebSocket, WebSocketDisconnect, status
+except Exception:  # pragma: no cover
+    WebSocket = Any  # type: ignore[assignment]
+    WebSocketDisconnect = RuntimeError  # type: ignore[assignment]
+    status = Any  # type: ignore[assignment]
+
 from overseer.execution.backend import ExecutionBackend
 from overseer.human_api import HumanAPI
 from overseer.integrators import CodexIntegrator
@@ -110,14 +117,7 @@ def _tail_log(path: Path, line_count: int) -> str:
 
 
 def create_app(daemon: OverseerDaemon) -> Any:
-    from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
-    from pydantic import BaseModel
-
-    class QueueResolutionPayload(BaseModel):
-        choice: str
-        rationale: str
-        artifact_path: str | None = None
-
+    from fastapi import FastAPI, HTTPException
     app = FastAPI(title="Overseer Local API")
 
     @app.get("/health")
@@ -192,9 +192,9 @@ def create_app(daemon: OverseerDaemon) -> Any:
         ]
 
     @app.post("/queue/{request_id}/resolve")
-    def resolve_queue_item(request_id: str, payload: QueueResolutionPayload) -> dict[str, str]:
-        choice = payload.choice.strip()
-        rationale = payload.rationale.strip()
+    def resolve_queue_item(request_id: str, payload: dict[str, Any]) -> dict[str, str]:
+        choice = str(payload.get("choice", "")).strip()
+        rationale = str(payload.get("rationale", "")).strip()
         if not choice:
             raise HTTPException(status_code=400, detail="choice cannot be empty")
         if not rationale:
@@ -205,7 +205,7 @@ def create_app(daemon: OverseerDaemon) -> Any:
                 request_id=request_id,
                 choice=choice,
                 rationale=rationale,
-                artifact_path=payload.artifact_path,
+                artifact_path=payload.get("artifact_path"),
             )
         except ValueError as exc:
             if "request not found" in str(exc):

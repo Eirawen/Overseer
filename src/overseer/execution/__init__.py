@@ -6,6 +6,7 @@ from overseer.execution.backend import (
     LocalBackend,
 )
 from overseer.execution.factory import build_backend
+from overseer.execution.run_store import RunStore, RunSubmission, SQLiteRunStore, StoredRun
 
 __all__ = [
     "ExecutionBackend",
@@ -14,4 +15,8 @@ __all__ = [
     "LocalBackend",
     "CeleryBackend",
     "build_backend",
+    "RunStore",
+    "RunSubmission",
+    "StoredRun",
+    "SQLiteRunStore",
 ]

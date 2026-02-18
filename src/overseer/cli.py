@@ -94,32 +94,39 @@ def cmd_run_agent(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_runs(args: argparse.Namespace) -> int:
+def cmd_runs_list(args: argparse.Namespace) -> int:
     integrator = _build_integrator(Path(args.repo_root))
     for run in integrator.runs():
         print(f"{run.run_id} task={run.task_id} status={run.status} exit={run.exit_code}")
     return 0
 
 
-def cmd_run_status(args: argparse.Namespace) -> int:
+def cmd_runs_show(args: argparse.Namespace) -> int:
     integrator = _build_integrator(Path(args.repo_root))
     run = integrator.status(args.run)
     print(f"{run.run_id} task={run.task_id} status={run.status} exit={run.exit_code}")
     return 0
 
 
-def cmd_run_cancel(args: argparse.Namespace) -> int:
+def cmd_runs_cancel(args: argparse.Namespace) -> int:
     integrator = _build_integrator(Path(args.repo_root))
     run = integrator.cancel(args.run)
     print(f"{run.run_id} task={run.task_id} status={run.status} exit={run.exit_code}")
     return 0
 
 
+def cmd_runs_reconcile(args: argparse.Namespace) -> int:
+    _, _, _, backend = _services(Path(args.repo_root))
+    reconciled = backend.reconcile(stale_after_seconds=args.stale_after_seconds)
+    for run in reconciled:
+        print(f"{run.run_id} task={run.task_id} status={run.status} reason={run.failure_reason}")
+    print(f"reconciled={len(reconciled)}")
+    return 0
+
+
 def cmd_execution_worker(args: argparse.Namespace) -> int:
-    meta_path = Path(args.meta)
-    codex_root = meta_path.parents[3]
-    backend = LocalBackend(codex_root)
-    return backend.run_worker(meta_path)
+    backend = LocalBackend(Path(args.codex_root))
+    return backend.run_worker(args.run_id)
 
 
 def cmd_integrate(args: argparse.Namespace) -> int:
@@ -232,15 +239,31 @@ def build_parser() -> argparse.ArgumentParser:
     run_agent_parser.set_defaults(func=cmd_run_agent)
 
     runs_parser = subparsers.add_parser("runs")
-    runs_parser.set_defaults(func=cmd_runs)
+    runs_subparsers = runs_parser.add_subparsers(dest="runs_command", required=True)
 
+    runs_list_parser = runs_subparsers.add_parser("list")
+    runs_list_parser.set_defaults(func=cmd_runs_list)
+
+    runs_show_parser = runs_subparsers.add_parser("show")
+    runs_show_parser.add_argument("--run", required=True)
+    runs_show_parser.set_defaults(func=cmd_runs_show)
+
+    runs_cancel_parser = runs_subparsers.add_parser("cancel")
+    runs_cancel_parser.add_argument("--run", required=True)
+    runs_cancel_parser.set_defaults(func=cmd_runs_cancel)
+
+    runs_reconcile_parser = runs_subparsers.add_parser("reconcile")
+    runs_reconcile_parser.add_argument("--stale-after-seconds", type=int, default=300)
+    runs_reconcile_parser.set_defaults(func=cmd_runs_reconcile)
+
+    # Backwards-compatible aliases
     run_status_parser = subparsers.add_parser("run-status")
     run_status_parser.add_argument("--run", required=True)
-    run_status_parser.set_defaults(func=cmd_run_status)
+    run_status_parser.set_defaults(func=cmd_runs_show)
 
     run_cancel_parser = subparsers.add_parser("run-cancel")
     run_cancel_parser.add_argument("--run", required=True)
-    run_cancel_parser.set_defaults(func=cmd_run_cancel)
+    run_cancel_parser.set_defaults(func=cmd_runs_cancel)
 
     human_parser = subparsers.add_parser("human")
     human_subparsers = human_parser.add_subparsers(dest="human_command", required=True)
@@ -260,7 +283,8 @@ def build_parser() -> argparse.ArgumentParser:
     human_resolve_parser.set_defaults(func=cmd_human_resolve)
 
     worker_parser = subparsers.add_parser("execution-worker")
-    worker_parser.add_argument("--meta", required=True)
+    worker_parser.add_argument("--run-id", required=True)
+    worker_parser.add_argument("--codex-root", required=True)
     worker_parser.set_defaults(func=cmd_execution_worker)
 
     serve_parser = subparsers.add_parser("serve")

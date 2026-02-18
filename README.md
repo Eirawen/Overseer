@@ -345,3 +345,13 @@ Preserve identity.
 ---
 
 This is Overseer.
+
+
+## Run operations
+
+```bash
+overseer --repo-root . runs list
+overseer --repo-root . runs show --run <run_id>
+overseer --repo-root . runs cancel --run <run_id>
+overseer --repo-root . runs reconcile --stale-after-seconds 300
+```

@@ -79,3 +79,18 @@ export OVERSEER_EXECUTION_BACKEND=local
 - Codex CLI may open a browser for ChatGPT login during execution.
 - Codex CLI may prompt for repository permissions or CLI updates.
 - Overseer surfaces blocked prompts as HumanAPI escalations; resolve these manually in your terminal session and then re-run.
+
+## Durable run persistence
+
+Overseer persists run state in SQLite at:
+
+- `codex/08_TELEMETRY/overseer.sqlite`
+
+This store is shared by local and Celery execution backends, so run metadata survives process restarts.
+
+You can reconcile stale running jobs with:
+
+```bash
+overseer --repo-root . runs reconcile --stale-after-seconds 300
+```
+
