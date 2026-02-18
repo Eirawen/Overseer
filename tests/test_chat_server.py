@@ -214,6 +214,48 @@ def test_command_rejects_empty_text_and_invalid_json(tmp_path: Path, monkeypatch
         service.stop()
 
 
+
+
+def test_command_rejects_unknown_command_but_server_stays_healthy(tmp_path: Path, monkeypatch) -> None:
+    service, server, base_url, _ = _setup_service(tmp_path, monkeypatch)
+    try:
+        with pytest.raises(HTTPError) as bad_cmd:
+            _post_json(f"{base_url}/command", {"text": "/not-a-command"})
+        assert bad_cmd.value.code == 400
+
+        ok = _post_json(f"{base_url}/message", {"text": "still works after bad command"})
+        assert ok["created_run_ids"]
+    finally:
+        server.shutdown()
+        service.stop()
+
+
+def test_command_rejects_non_object_payload_and_oversize_payload(tmp_path: Path, monkeypatch) -> None:
+    service, server, base_url, _ = _setup_service(tmp_path, monkeypatch)
+    try:
+        list_req = request.Request(
+            f"{base_url}/command",
+            data=json.dumps(["bad", "shape"]).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(HTTPError) as shape_exc:
+            request.urlopen(list_req, timeout=5)  # noqa: S310
+        assert shape_exc.value.code == 400
+
+        big_req = request.Request(
+            f"{base_url}/command",
+            data=json.dumps({"text": "x" * 40000}).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(HTTPError) as size_exc:
+            request.urlopen(big_req, timeout=5)  # noqa: S310
+        assert size_exc.value.code == 413
+    finally:
+        server.shutdown()
+        service.stop()
+
 def test_serve_chat_rejects_non_localhost_binding() -> None:
     with pytest.raises(RuntimeError, match="localhost only"):
         serve_chat(object(), host="0.0.0.0", port=8765)  # type: ignore[arg-type]
@@ -277,7 +319,9 @@ def test_non_blocking_conversation_e2e_with_event_stream(tmp_path: Path, monkeyp
         else:
             raise AssertionError("first run never became active")
 
+        command_start = time.perf_counter()
         status_payload = _post_json(f"{base_url}/command", {"text": f"/run status {first_run_id}"})
+        assert time.perf_counter() - command_start < 1.0
         assert first_run_id in status_payload["assistant_text"]
 
         second = _post_json(f"{base_url}/message", {"text": "send another command while active"})

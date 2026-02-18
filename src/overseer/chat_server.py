@@ -18,6 +18,7 @@ from overseer.integrators import CodexIntegrator, RunRequest
 from overseer.task_store import TaskStore
 
 TASK_ID_RE = re.compile(r"\b(task-[0-9a-f]{12})\b")
+MAX_POST_BYTES = 32_768
 
 
 class EventBus:
@@ -297,12 +298,27 @@ class OverseerHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "not found"}, code=404)
             return
 
-        content_length = int(self.headers.get("Content-Length", "0"))
+        content_length_raw = self.headers.get("Content-Length", "0")
+        try:
+            content_length = int(content_length_raw)
+        except ValueError:
+            self._send_json({"error": "invalid content length"}, code=400)
+            return
+        if content_length < 0:
+            self._send_json({"error": "invalid content length"}, code=400)
+            return
+        if content_length > MAX_POST_BYTES:
+            self._send_json({"error": "payload too large"}, code=413)
+            return
+
         raw_payload = self.rfile.read(content_length) or b"{}"
         try:
             payload = json.loads(raw_payload)
         except json.JSONDecodeError:
             self._send_json({"error": "invalid json"}, code=400)
+            return
+        if not isinstance(payload, dict):
+            self._send_json({"error": "payload must be an object"}, code=400)
             return
 
         text = str(payload.get("text", "")).strip()

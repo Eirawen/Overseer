@@ -158,6 +158,7 @@ Goal: chat loop exists, doesn’t block, and can spawn runs + report status.
   - [x] Submitting from chat returns immediately
   - [x] Status updates appear without blocking input handling
   - [x] API/event-stream E2E proves run events continue while new chat messages and run commands are accepted
+  - [x] Chat API rejects malformed/oversized command payloads without destabilizing subsequent requests
   - [x] Command parsing unit tests for `/run`, `/queue`, and `/open`
   - [x] CLI chat command errors are surfaced without terminating session
 

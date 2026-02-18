@@ -33,3 +33,6 @@
 - [2026-02-17T16:35:00Z] Task 10 hardening pass: added production-grade `/command` HTTP endpoint with JSON validation and explicit 400 error mapping for invalid command payloads/errors, and updated non-blocking E2E to exercise command handling over HTTP while SSE events stream.
   - Why: avoid in-process-only command assertions and harden chat API behavior under malformed payloads and real client usage.
   - How to test: `pytest -q tests/test_chat_server.py::test_non_blocking_conversation_e2e_with_event_stream tests/test_chat_server.py::test_command_rejects_empty_text_and_invalid_json tests/test_chat_server.py`
+- [2026-02-17T17:10:00Z] Task 10 production hardening: bounded POST payload size, strict JSON object/content-length validation, and added regression tests for unknown commands, malformed payload shapes, oversized payloads, and service continuity after command errors.
+  - Why: keep the chat API resilient under malformed client input and prevent a single bad command from disrupting active conversation/run workflows.
+  - How to test: `pytest -q tests/test_chat_server.py::test_command_rejects_unknown_command_but_server_stays_healthy tests/test_chat_server.py::test_command_rejects_non_object_payload_and_oversize_payload tests/test_chat_server.py::test_non_blocking_conversation_e2e_with_event_stream tests/test_chat_server.py`
