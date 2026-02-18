@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -10,6 +11,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib import request
 from urllib.error import HTTPError
+from urllib.error import URLError
 
 import pytest
 
@@ -191,6 +193,69 @@ def test_message_rejects_empty_text(tmp_path: Path, monkeypatch) -> None:
         service.stop()
 
 
+def test_command_rejects_empty_text_and_invalid_json(tmp_path: Path, monkeypatch) -> None:
+    service, server, base_url, _ = _setup_service(tmp_path, monkeypatch)
+    try:
+        with pytest.raises(HTTPError) as exc:
+            _post_json(f"{base_url}/command", {"text": "   "})
+        assert exc.value.code == 400
+
+        req = request.Request(
+            f"{base_url}/command",
+            data=b"{not-json",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(HTTPError) as invalid_exc:
+            request.urlopen(req, timeout=5)  # noqa: S310
+        assert invalid_exc.value.code == 400
+    finally:
+        server.shutdown()
+        service.stop()
+
+
+
+
+def test_command_rejects_unknown_command_but_server_stays_healthy(tmp_path: Path, monkeypatch) -> None:
+    service, server, base_url, _ = _setup_service(tmp_path, monkeypatch)
+    try:
+        with pytest.raises(HTTPError) as bad_cmd:
+            _post_json(f"{base_url}/command", {"text": "/not-a-command"})
+        assert bad_cmd.value.code == 400
+
+        ok = _post_json(f"{base_url}/message", {"text": "still works after bad command"})
+        assert ok["created_run_ids"]
+    finally:
+        server.shutdown()
+        service.stop()
+
+
+def test_command_rejects_non_object_payload_and_oversize_payload(tmp_path: Path, monkeypatch) -> None:
+    service, server, base_url, _ = _setup_service(tmp_path, monkeypatch)
+    try:
+        list_req = request.Request(
+            f"{base_url}/command",
+            data=json.dumps(["bad", "shape"]).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(HTTPError) as shape_exc:
+            request.urlopen(list_req, timeout=5)  # noqa: S310
+        assert shape_exc.value.code == 400
+
+        big_req = request.Request(
+            f"{base_url}/command",
+            data=json.dumps({"text": "x" * 40000}).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(HTTPError) as size_exc:
+            request.urlopen(big_req, timeout=5)  # noqa: S310
+        assert size_exc.value.code == 413
+    finally:
+        server.shutdown()
+        service.stop()
+
 def test_serve_chat_rejects_non_localhost_binding() -> None:
     with pytest.raises(RuntimeError, match="localhost only"):
         serve_chat(object(), host="0.0.0.0", port=8765)  # type: ignore[arg-type]
@@ -212,6 +277,83 @@ def test_events_emit_status_transitions(tmp_path: Path, monkeypatch) -> None:
     finally:
         server.shutdown()
         service.stop()
+
+
+def test_non_blocking_conversation_e2e_with_event_stream(tmp_path: Path, monkeypatch) -> None:
+    service, server, base_url, _ = _setup_service(tmp_path, monkeypatch, "echo start\nsleep 1\necho done")
+    stream_events: queue.Queue[dict] = queue.Queue()
+    stream_errors: queue.Queue[str] = queue.Queue()
+    stream_stop = threading.Event()
+    stream_connected = threading.Event()
+
+    def _collect_events() -> None:
+        try:
+            with request.urlopen(f"{base_url}/events", timeout=10) as resp:  # noqa: S310
+                stream_connected.set()
+                while not stream_stop.is_set():
+                    raw = resp.readline().decode("utf-8")
+                    if not raw.startswith("data: "):
+                        continue
+                    try:
+                        stream_events.put(json.loads(raw.removeprefix("data: ").strip()))
+                    except json.JSONDecodeError:
+                        continue
+        except (OSError, URLError, TimeoutError) as exc:  # pragma: no cover - shutdown races can close the stream
+            if not stream_stop.is_set():
+                stream_errors.put(str(exc))
+
+    collector = threading.Thread(target=_collect_events, daemon=True)
+    collector.start()
+
+    try:
+        assert stream_connected.wait(timeout=2), "events stream did not connect"
+        first = _post_json(f"{base_url}/message", {"text": "start non blocking run"})
+        first_run_id = first["created_run_ids"][0]
+
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            run = service.get_run(first_run_id)
+            if run["status"] in {"running", "done"}:
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("first run never became active")
+
+        command_start = time.perf_counter()
+        status_payload = _post_json(f"{base_url}/command", {"text": f"/run status {first_run_id}"})
+        assert time.perf_counter() - command_start < 1.0
+        assert first_run_id in status_payload["assistant_text"]
+
+        second = _post_json(f"{base_url}/message", {"text": "send another command while active"})
+        second_run_id = second["created_run_ids"][0]
+
+        saw_first_running = False
+        saw_first_done = False
+        saw_second_event = False
+        deadline = time.time() + 8
+        while time.time() < deadline and not (saw_first_running and saw_first_done and saw_second_event):
+            try:
+                event = stream_events.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if event.get("type") != "run_status":
+                continue
+            if event.get("run_id") == first_run_id and event.get("status") == "running":
+                saw_first_running = True
+            if event.get("run_id") == first_run_id and event.get("status") == "done":
+                saw_first_done = True
+            if event.get("run_id") == second_run_id:
+                saw_second_event = True
+
+        assert saw_first_running
+        assert saw_first_done
+        assert saw_second_event
+        assert stream_errors.empty(), list(stream_errors.queue)
+    finally:
+        stream_stop.set()
+        server.shutdown()
+        service.stop()
+        collector.join(timeout=2)
 
 
 def test_notes_enforcement_escalates_when_missing(tmp_path: Path) -> None:
