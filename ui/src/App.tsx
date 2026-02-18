@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   cancelRun,
@@ -12,6 +12,7 @@ import {
 } from './api';
 
 const DEFAULT_API_ROOT = 'http://127.0.0.1:8765';
+const VOICE_ENABLED_STORAGE_KEY = 'overseer.voice.enabled';
 
 type ChatMessage = {
   role: 'human' | 'system';
@@ -30,6 +31,34 @@ type EventEnvelope = {
   };
 };
 
+type SpeechRecognitionEventLike = {
+  results: ArrayLike<ArrayLike<{ transcript?: string }>>;
+};
+
+type SpeechRecognitionLike = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+
+type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
+
+type FeatureFlags = {
+  voiceEnabled?: boolean;
+};
+
+declare global {
+  interface Window {
+    webkitSpeechRecognition?: SpeechRecognitionCtor;
+    SpeechRecognition?: SpeechRecognitionCtor;
+    __OVERSEER_FLAGS__?: FeatureFlags;
+  }
+}
 
 function buildFormattedRationale(replyFormat: string | null | undefined, choice: string, rationale: string): string {
   const trimmed = rationale.trim();
@@ -39,6 +68,31 @@ function buildFormattedRationale(replyFormat: string | null | undefined, choice:
   return `REPLY_FORMAT: ${replyFormat}
 CHOICE: ${choice}
 RATIONALE: ${trimmed}`;
+}
+
+function readVoiceEnabled(): boolean {
+  const runtimeOverride = window.__OVERSEER_FLAGS__?.voiceEnabled;
+  if (typeof runtimeOverride === 'boolean') {
+    return runtimeOverride;
+  }
+
+  const persisted = window.localStorage.getItem(VOICE_ENABLED_STORAGE_KEY);
+  if (persisted === 'true') {
+    return true;
+  }
+  if (persisted === 'false') {
+    return false;
+  }
+
+  return String(import.meta.env.VITE_VOICE_ENABLED ?? '').toLowerCase() === 'true';
+}
+
+function writeVoiceEnabled(enabled: boolean): void {
+  window.localStorage.setItem(VOICE_ENABLED_STORAGE_KEY, enabled ? 'true' : 'false');
+}
+
+function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
+  return window.SpeechRecognition ?? window.webkitSpeechRecognition ?? null;
 }
 
 export function App(): JSX.Element {
@@ -55,6 +109,13 @@ export function App(): JSX.Element {
   const [runStderr, setRunStderr] = useState<string>('');
   const [wsConnected, setWsConnected] = useState<boolean>(false);
   const [lastActivityAt, setLastActivityAt] = useState<Date | null>(null);
+  const [voiceEnabled, setVoiceEnabled] = useState<boolean>(() => readVoiceEnabled());
+  const [voiceListening, setVoiceListening] = useState<boolean>(false);
+  const [orbPulse, setOrbPulse] = useState<boolean>(false);
+
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const speechRecognitionCtor = getSpeechRecognitionCtor();
+  const speechRecognitionSupported = speechRecognitionCtor !== null;
 
   const selectedQueueItem = useMemo(
     () => queueItems.find((item) => item.request_id === selectedRequestId) ?? null,
@@ -166,6 +227,91 @@ export function App(): JSX.Element {
     };
   }, [apiRoot, selectedRunId]);
 
+  useEffect(() => {
+    writeVoiceEnabled(voiceEnabled);
+  }, [voiceEnabled]);
+
+  useEffect(() => {
+    if (!voiceEnabled || !speechRecognitionCtor) {
+      recognitionRef.current = null;
+      return;
+    }
+
+    const recognition = new speechRecognitionCtor();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    recognition.onresult = (event) => {
+      const transcript = Array.from(event.results)
+        .flatMap((result) => Array.from(result))
+        .map((item) => item.transcript ?? '')
+        .join(' ')
+        .trim();
+      if (transcript) {
+        setChatInput(transcript);
+      }
+    };
+    recognition.onerror = () => {
+      setVoiceListening(false);
+      setOrbPulse(false);
+      setChatMessages((prev) => [...prev, { role: 'system', text: 'Voice capture failed. Falling back to text input.' }]);
+    };
+    recognition.onend = () => {
+      setVoiceListening(false);
+      setOrbPulse(false);
+    };
+    recognitionRef.current = recognition;
+
+    return () => {
+      recognition.stop();
+      recognitionRef.current = null;
+      setVoiceListening(false);
+      setOrbPulse(false);
+    };
+  }, [voiceEnabled, speechRecognitionCtor]);
+
+  const handleToggleVoice = (): void => {
+    if (voiceEnabled) {
+      recognitionRef.current?.stop();
+      setVoiceListening(false);
+      setOrbPulse(false);
+      setVoiceEnabled(false);
+      return;
+    }
+
+    setVoiceEnabled(true);
+    if (!speechRecognitionSupported) {
+      setChatMessages((prev) => [...prev, { role: 'system', text: 'Voice is unavailable in this browser. Text chat remains active.' }]);
+    }
+  };
+
+  const handleVoiceStart = (): void => {
+    if (!voiceEnabled) {
+      return;
+    }
+
+    if (!recognitionRef.current) {
+      setChatMessages((prev) => [...prev, { role: 'system', text: 'Voice is unavailable in this browser. Text chat remains active.' }]);
+      return;
+    }
+
+    try {
+      recognitionRef.current.start();
+      setVoiceListening(true);
+      setOrbPulse(true);
+    } catch {
+      setVoiceListening(false);
+      setOrbPulse(false);
+      setChatMessages((prev) => [...prev, { role: 'system', text: 'Unable to start microphone capture. You can continue with text input.' }]);
+    }
+  };
+
+  const handleVoiceStop = (): void => {
+    recognitionRef.current?.stop();
+    setVoiceListening(false);
+    setOrbPulse(false);
+  };
+
   const handleSend = (): void => {
     const trimmed = chatInput.trim();
     if (!trimmed) {
@@ -232,6 +378,31 @@ export function App(): JSX.Element {
       <section className="pane-grid">
         <section className="pane left">
           <h2>Chat</h2>
+          <div className="voice-controls" aria-live="polite">
+            <button type="button" className="voice-toggle" onClick={handleToggleVoice}>
+              {voiceEnabled ? 'Disable voice' : 'Enable voice'}
+            </button>
+            {voiceEnabled ? (
+              <>
+                <button
+                  type="button"
+                  className="ptt-button"
+                  disabled={!speechRecognitionSupported}
+                  onMouseDown={handleVoiceStart}
+                  onMouseUp={handleVoiceStop}
+                  onMouseLeave={handleVoiceStop}
+                  onTouchStart={handleVoiceStart}
+                  onTouchEnd={handleVoiceStop}
+                >
+                  {voiceListening ? 'Listening… release to stop' : 'Hold to talk'}
+                </button>
+                <div className={`voice-orb ${orbPulse ? 'pulse' : ''}`} role="img" aria-label="Voice orb visualization" />
+                <small>{speechRecognitionSupported ? 'Voice input optional: text input always available.' : 'Voice unavailable; using text input only.'}</small>
+              </>
+            ) : (
+              <small>Voice is optional and off by default. Text input is always available.</small>
+            )}
+          </div>
           <div className="chat-stream">
             {chatMessages.length === 0 ? <p className="placeholder">No messages yet.</p> : null}
             {chatMessages.map((message, idx) => (

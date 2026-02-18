@@ -60,3 +60,15 @@ def test_single_command_ui_launcher_exists() -> None:
     assert launcher.exists()
     text = launcher.read_text(encoding='utf-8')
     assert 'npm run dev' in text
+
+
+def test_ui_voice_feature_flag_and_orb_present() -> None:
+    app_source = Path('ui/src/App.tsx').read_text(encoding='utf-8')
+    css_source = Path('ui/src/styles.css').read_text(encoding='utf-8')
+
+    assert "VITE_VOICE_ENABLED" in app_source
+    assert "Enable voice" in app_source
+    assert "Hold to talk" in app_source
+    assert "overseer.voice.enabled" in app_source
+    assert "voice-orb" in app_source
+    assert "@keyframes orbPulse" in css_source

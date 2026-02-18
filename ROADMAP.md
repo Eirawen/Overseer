@@ -247,10 +247,13 @@ We will build text-first UI, then optionally add voice polish. Voice is presenta
 - [ ] Or, if staying fully local-process, a direct Python binding is OK initially—but API tends to simplify UI.
 
 #### M2.4 Voice polish (optional, after text UX is correct)
-- [ ] “Soft glowy voice thing” visualization
+- [x] “Soft glowy voice thing” visualization
 - [ ] Optional STT/TTS hooks
-- [ ] Must not be required to use the product
-- [ ] Defer model/provider choices until needed (keep provider-agnostic)
+- [x] Must not be required to use the product
+- [x] Defer model/provider choices until needed (keep provider-agnostic)
+- [x] Add `VOICE_ENABLED` UI feature flag with browser speech-recognition push-to-talk path
+- [x] Fallback to text-only when browser speech recognition APIs are unavailable
+- [x] In-UI voice toggle control (no startup flag required) with persisted preference
 
 ---
 
