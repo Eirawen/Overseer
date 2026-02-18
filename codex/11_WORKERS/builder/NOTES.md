@@ -36,3 +36,9 @@
 - [2026-02-17T17:10:00Z] Task 10 production hardening: bounded POST payload size, strict JSON object/content-length validation, and added regression tests for unknown commands, malformed payload shapes, oversized payloads, and service continuity after command errors.
   - Why: keep the chat API resilient under malformed client input and prevent a single bad command from disrupting active conversation/run workflows.
   - How to test: `pytest -q tests/test_chat_server.py::test_command_rejects_unknown_command_but_server_stays_healthy tests/test_chat_server.py::test_command_rejects_non_object_payload_and_oversize_payload tests/test_chat_server.py::test_non_blocking_conversation_e2e_with_event_stream tests/test_chat_server.py`
+- [2026-02-18T00:00:00Z] Task 11 voice optional sugar: added `VOICE_ENABLED` UI feature flag (`VITE_VOICE_ENABLED` / runtime override), browser push-to-talk using Web Speech API when available, text-only fallback when unavailable, and a lightweight animated voice orb indicator. Extended frontend and pytest coverage for flag/fallback/orb behavior and updated roadmap section M2.4.
+  - Why: add optional voice polish without gating release readiness or introducing provider coupling.
+  - How to test: `npm --prefix ui run test`, `npm --prefix ui run typecheck`, `pytest -q tests/test_ui_scaffolding.py`.
+- [2026-02-18T00:30:00Z] Task 11 follow-up hardening: replaced startup-only voice gating with an explicit in-UI Enable/Disable voice toggle, persisted preference in localStorage, and added resiliency for unsupported browsers/startup errors while preserving text-only operation. Expanded Vitest coverage for toggle persistence, unsupported fallback messaging, and microphone-start failure handling.
+  - Why: users should be able to opt into voice from the UI directly without requiring launch-time flags.
+  - How to test: `npm --prefix ui run test`, `npm --prefix ui run typecheck`, `pytest -q tests/test_ui_scaffolding.py`.

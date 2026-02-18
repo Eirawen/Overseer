@@ -173,3 +173,44 @@ body {
 .placeholder {
   opacity: 0.75;
 }
+
+.voice-controls {
+  align-items: center;
+  border: 1px solid #666;
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.8rem;
+  padding: 0.5rem;
+}
+
+.ptt-button {
+  min-width: 9rem;
+}
+
+.voice-orb {
+  background: radial-gradient(circle, rgba(80, 127, 250, 0.7) 0%, rgba(80, 127, 250, 0.2) 65%, transparent 100%);
+  border-radius: 999px;
+  height: 20px;
+  transition: transform 120ms ease, opacity 120ms ease;
+  width: 20px;
+}
+
+.voice-orb.pulse {
+  animation: orbPulse 900ms ease-in-out infinite;
+}
+
+@keyframes orbPulse {
+  0% { opacity: 0.7; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.25); }
+  100% { opacity: 0.7; transform: scale(1); }
+}
+
+.voice-toggle {
+  min-width: 7.5rem;
+}
+
+.voice-controls small {
+  flex: 1 1 14rem;
+}
