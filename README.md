@@ -2,7 +2,10 @@
 
 ## Setup
 
+
+- Worker rule: every worker must append progress notes to `codex/11_WORKERS/<role>/NOTES.md` (append-only).
 - First launch guide: [`docs/CONFIGURING_OVERSEER.md`](docs/CONFIGURING_OVERSEER.md)
+- Agent architecture: [`docs/OVERSEER_AS_AGENT.md`](docs/OVERSEER_AS_AGENT.md)
 - Human escalation task-type presets: `codex/04_HUMAN_API/HUMAN_TASK_TYPES.json`
 
 ## Local UI MVP (scaffold)

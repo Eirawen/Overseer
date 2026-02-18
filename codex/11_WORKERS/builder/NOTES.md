@@ -56,3 +56,11 @@
 - [2026-02-18T08:06:22+00:00] Agent-15 started task: adding first-class HUMAN_TASK_TYPES config + validation, HumanAPI integration, CLI commands, tests/docs updates.
 - [2026-02-18T08:08:38+00:00] Implemented HumanTaskTypes system: added codex/04_HUMAN_API/HUMAN_TASK_TYPES.json defaults, validation+listing in HumanAPI, typed escalation defaults in append_request, and new CLI commands `human-types validate|list`. Added tests for config errors/selection behavior and CLI coverage; updating docs now.
 - [2026-02-18T08:11:13+00:00] Validation pass complete: `ruff check src tests` and `pytest -q tests/test_human_api.py tests/test_cli.py` green. Full `pytest -q` repeatedly terminated by environment with exit -1 after partial progress dots.
+- 2026-02-18 Agent16: Implemented LangGraph-based OverseerCoreGraph with persistent sessions, non-blocking run orchestration, polling/review/escalation flow, session telemetry, and worker note writes.
+- 2026-02-18 Agent16: Added `overseer chat` session REPL commands (`/new`, `/resume`, `/status`, `/plan`, `/tick`, `/exit`) and `overseer session list`.
+- 2026-02-18 Agent16: Added FakeLLM + SessionStore + deterministic tests in `tests/test_overseer_core_graph.py`.
+- 2026-02-18 Agent16: Run chat flow with `overseer --repo-root <repo> chat`; if Codex CLI is missing, graph escalates through HumanAPI.
+- 2026-02-18 Agent16: Known limitations: review result semantics are status-based scaffolding; richer diff/test-aware merge policy remains future work.
+- 2026-02-18 Agent16 hardening pass: switched polling to backend-first with safe fallback to integrator status, moved roadmap artifact to `codex/03_WORK/ROADMAP.md`, improved SessionStore locking/update timestamps/list filtering, and added unknown-command handling in chat REPL.
+- 2026-02-18 Agent16 tests added: backend-poll assertion, session resume + worker note assertion, and CLI `session list` coverage.
+- 2026-02-18 Agent16 validation note: full per-file pytest run passed except `tests/test_concurrency.py` repeatedly terminated by SIGTERM (-15) in this environment during execution.
