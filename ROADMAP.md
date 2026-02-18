@@ -153,9 +153,11 @@ Goal: chat loop exists, doesn’t block, and can spawn runs + report status.
   - [x] Chat handler calls execution backend to submit run
   - [x] Returns immediately with run_id
   - [x] Background polling or event subscription updates chat with run progress
+  - [x] HTTP chat API accepts slash-command execution (`/command`) without interrupting in-flight runs
 - [x] Tests:
   - [x] Submitting from chat returns immediately
   - [x] Status updates appear without blocking input handling
+  - [x] API/event-stream E2E proves run events continue while new chat messages and run commands are accepted
   - [x] Command parsing unit tests for `/run`, `/queue`, and `/open`
   - [x] CLI chat command errors are surfaced without terminating session
 
@@ -357,4 +359,3 @@ Goal: prove it works on a real repo and real workflow.
 - Always assume:
   - You are inside a git repo; use worktrees for runs
 - Don’t mention future integrations (Jules/Claude) unless the task explicitly asks
-
