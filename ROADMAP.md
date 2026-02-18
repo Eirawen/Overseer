@@ -51,7 +51,7 @@ These are the “shape constraints” we keep stacking on.
 - [ ] **Provider agnostic:** do not hard-wire OpenAI-only assumptions into the orchestration layer
 - [ ] **Agent-agnostic:** we integrate with existing coding agents (Codex CLI first). We do not build “our own coder.”
 - [ ] **Git-native:** every run happens in an isolated worktree (or equivalent isolation) with explicit repo-root validation
-- [ ] **Local-first, Celery-ready:** local backend exists now; Celery backend later should be a drop-in behind the same interface
+- [x] **Celery-first execution:** Celery backend is the default orchestration path with optional local override for debugging
 - [ ] **Text is cheap:** persist raw logs + artifacts; store summaries as convenience, not as the primary truth
 
 ---
@@ -296,9 +296,11 @@ Goal: local backend remains default, but we can swap in Celery with minimal refa
 - [ ] Stub implementation behind a feature flag (optional)
 
 #### M4.3 Implement Celery backend (later)
-- [ ] Add redis + celery deps
-- [ ] Worker process
-- [ ] Integration tests in CI
+- [x] Add redis + celery deps as first-class runtime dependencies
+- [x] Worker process (registered Celery task routes into the existing event-sourced worker execution path)
+- [x] Integration tests scaffold (gated by `REDIS_URL`)
+- [x] Runtime backend selection (`OVERSEER_EXECUTION_BACKEND=celery|local`) with Celery default
+- [ ] CI lane for Redis-backed Celery integration execution
 
 ---
 

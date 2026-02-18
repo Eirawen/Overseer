@@ -8,7 +8,7 @@ from pathlib import Path
 
 from overseer.codex_store import CodexStore
 from overseer.chat_server import OverseerChatService
-from overseer.execution.backend import LocalBackend
+from overseer.execution import LocalBackend, build_backend
 from overseer.git_worktree import GitRepoError, resolve_git_root
 from overseer.human_api import HumanAPI
 from overseer.integrators import CodexIntegrator, RunRequest
@@ -37,7 +37,7 @@ def _services(repo_root: Path | None = None):
     codex_store = CodexStore(root)
     task_store = TaskStore(codex_store)
     human_api = HumanAPI(codex_store)
-    backend = LocalBackend(codex_store.codex_root, human_api=human_api)
+    backend = build_backend(codex_store.codex_root, human_api=human_api)
     return codex_store, task_store, human_api, backend
 
 

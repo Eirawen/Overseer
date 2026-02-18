@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from uuid import uuid4
 
-from overseer.execution.backend import ExecutionRequest, LocalBackend
+from overseer.execution.backend import ExecutionBackend, ExecutionRequest
 from overseer.git_worktree import GitWorktreeManager
 from overseer.human_api import HumanAPI
 from overseer.integrators.base import RunRequest, RunResult
@@ -14,7 +15,7 @@ class CodexIntegrator:
         self,
         repo_root: Path,
         human_api: HumanAPI,
-        backend: LocalBackend,
+        backend: ExecutionBackend,
         command: list[str] | None = None,
     ) -> None:
         self.repo_root = repo_root
@@ -46,7 +47,7 @@ class CodexIntegrator:
             )
             raise RuntimeError("codex CLI not installed or not on PATH")
 
-        run_id = LocalBackend.new_run_id()
+        run_id = f"run-{uuid4().hex[:12]}"
         worktree = self.worktrees.create_for_run(task_id=request.task_id, run_id=run_id)
         instructions = worktree.path / "INSTRUCTIONS.md"
         instructions.write_text(request.objective + "\n", encoding="utf-8")

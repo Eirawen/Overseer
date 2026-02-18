@@ -9,7 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from overseer.execution.backend import LocalBackend
+from overseer.execution.backend import ExecutionBackend
 from overseer.human_api import HumanAPI
 from overseer.integrators import CodexIntegrator
 
@@ -21,7 +21,7 @@ MAX_LOG_LINES = 400
 class OverseerDaemon:
     def __init__(
         self,
-        backend: LocalBackend,
+        backend: ExecutionBackend,
         integrator: CodexIntegrator,
         human_api: HumanAPI,
         poll_interval_s: float = 0.3,

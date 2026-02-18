@@ -14,6 +14,8 @@ dependencies = [
   "langchain-core>=0.3.35,<0.4",
   "fastapi>=0.115,<1",
   "uvicorn>=0.30,<1",
+  "celery>=5.4,<6",
+  "redis>=5,<6",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +36,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 addopts = "-q"
+markers = [
+  "integration: tests requiring optional external services",
+]
 
 [tool.ruff]
 line-length = 100

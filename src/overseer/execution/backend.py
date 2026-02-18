@@ -399,6 +399,74 @@ class LocalBackend:
                 record.exit_code = payload.get("exit_code")
             elif event.type == "escalated":
                 record.status = "failed"
-            elif event.type in {"stdout", "stderr", "summary_written"}:
+            elif event.type in {"stdout", "stderr", "summary_written", "worker_dispatched"}:
                 continue
+        return record
+
+class CeleryBackend(LocalBackend):
+    def __init__(
+        self,
+        codex_root: Path,
+        human_api: HumanAPI | None = None,
+        worker_role: str = "builder",
+        celery_app: Any | None = None,
+        task_name: str = "overseer.execution.celery_worker.execute_run",
+    ) -> None:
+        super().__init__(codex_root=codex_root, human_api=human_api, worker_role=worker_role)
+        if celery_app is None:
+            from overseer.execution.celery_app import build_celery_app
+
+            self.celery_app = build_celery_app()
+        else:
+            self.celery_app = celery_app
+        self.task_name = task_name
+
+    def submit(self, request: ExecutionRequest) -> str:
+        request.stdout_log.parent.mkdir(parents=True, exist_ok=True)
+        request.stderr_log.parent.mkdir(parents=True, exist_ok=True)
+        record = ExecutionRecord(
+            run_id=request.run_id,
+            task_id=request.task_id,
+            status="queued",
+            command=request.command,
+            cwd=str(request.cwd),
+            stdout_log=str(request.stdout_log),
+            stderr_log=str(request.stderr_log),
+            meta_path=str(request.meta_path),
+            lock_path=str(request.lock_path),
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        with file_lock(self._events_lock_path(request.meta_path)):
+            self._append_event(
+                request.meta_path,
+                "started",
+                {
+                    "record": asdict(record),
+                },
+            )
+
+        async_result = self.celery_app.send_task(
+            self.task_name,
+            args=[str(request.meta_path), str(self.codex_root)],
+        )
+        with file_lock(self._events_lock_path(request.meta_path)):
+            self._append_event(
+                request.meta_path,
+                "worker_dispatched",
+                {"celery_task_id": getattr(async_result, "id", None)},
+            )
+        return request.run_id
+
+    def cancel(self, run_id: str) -> ExecutionRecord:
+        record = super().cancel(run_id)
+        meta_path = self.runs_root / run_id / "meta.json"
+        task_id = None
+        events = self._read_events(self._events_path(meta_path))
+        for event in reversed(events):
+            if event.type == "worker_dispatched":
+                task_id = event.payload.get("celery_task_id")
+                if task_id:
+                    break
+        if task_id:
+            self.celery_app.control.revoke(task_id, terminate=True)
         return record

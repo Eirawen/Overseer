@@ -57,6 +57,23 @@ Each run writes logs to:
 
 If Codex CLI is missing, Overseer appends a HumanAPI request in `codex/04_HUMAN_API/HUMAN_QUEUE.md` with install/configuration guidance.
 
+## Execution backend (Celery default)
+
+Overseer now defaults to Celery-backed execution.
+
+- Set `REDIS_URL` to point at your broker/backend (example: `redis://127.0.0.1:6379/0`).
+- Run a Celery worker in a separate terminal:
+
+```bash
+celery -A overseer.execution.celery_app:celery_app worker --loglevel=INFO
+```
+
+- To force local subprocess mode for debugging, set:
+
+```bash
+export OVERSEER_EXECUTION_BACKEND=local
+```
+
 ## Codex CLI prompts and escalations
 
 - Codex CLI may open a browser for ChatGPT login during execution.

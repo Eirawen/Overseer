@@ -42,3 +42,9 @@
 - [2026-02-18T00:30:00Z] Task 11 follow-up hardening: replaced startup-only voice gating with an explicit in-UI Enable/Disable voice toggle, persisted preference in localStorage, and added resiliency for unsupported browsers/startup errors while preserving text-only operation. Expanded Vitest coverage for toggle persistence, unsupported fallback messaging, and microphone-start failure handling.
   - Why: users should be able to opt into voice from the UI directly without requiring launch-time flags.
   - How to test: `npm --prefix ui run test`, `npm --prefix ui run typecheck`, `pytest -q tests/test_ui_scaffolding.py`.
+- [2026-02-18T01:10:00Z] Task 13 Celery backend: added `CeleryBackend` implementing `ExecutionBackend` with event-sourced run persistence matching LocalBackend semantics, introduced optional `overseer[celery]` extras, and added unit + REDIS_URL-gated integration-style tests.
+  - Why: enable queue-based worker execution without changing run/event source-of-truth model or default local behavior.
+  - How to test: `pytest -q tests/test_celery_backend.py tests/test_backend.py` (and run `REDIS_URL=redis://... pytest -q tests/test_celery_backend.py -m integration` when Redis is available).
+- [2026-02-18T02:05:00Z] Task 13 Celery hardening follow-up: promoted Celery/Redis to first-class dependencies, switched service wiring to Celery backend by default (local override via `OVERSEER_EXECUTION_BACKEND=local`), registered a real Celery app/task module, and added cancellation revoke coverage.
+  - Why: previous patch left Celery as a mostly-optional path and did not fully switch runtime behavior to Celery-first execution.
+  - How to test: `pytest -q tests/test_celery_backend.py tests/test_cli.py tests/test_backend.py`; run `celery -A overseer.execution.celery_app:celery_app worker --loglevel=INFO` with `REDIS_URL` for end-to-end queue execution.
