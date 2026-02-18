@@ -2,33 +2,17 @@ from __future__ import annotations
 
 import argparse
 import sys
-import queue
-import threading
 from pathlib import Path
 
 from overseer.codex_store import CodexStore
-from overseer.chat_server import OverseerChatService
 from overseer.execution import LocalBackend, build_backend
 from overseer.git_worktree import GitRepoError, resolve_git_root
 from overseer.human_api import HumanAPI
 from overseer.integrators import CodexIntegrator, RunRequest
+from overseer.llm import FakeLLM
+from overseer.overseer_graph import OverseerCoreGraph
 from overseer.task_store import TaskStore
 
-
-def _print_event_stream(service: OverseerChatService, stop: threading.Event) -> None:
-    sub = service.events.subscribe()
-    try:
-        while not stop.is_set():
-            try:
-                event = sub.get(timeout=0.5)
-            except queue.Empty:
-                continue
-            if event.get("type") == "run_status":
-                print(f"[status] {event['run_id']} task={event['task_id']} status={event['status']}")
-            elif event.get("type") == "human_escalation":
-                print(f"[queue] human escalations pending={event['count']}")
-    finally:
-        service.events.unsubscribe(sub)
 
 
 def _services(repo_root: Path | None = None):
@@ -192,38 +176,82 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 
 def cmd_chat(args: argparse.Namespace) -> int:
-    codex_store, task_store, human_api, _ = _services(Path(args.repo_root))
+    codex_store, task_store, human_api, backend = _services(Path(args.repo_root))
     codex_store.init_structure()
     integrator = _build_integrator(codex_store.repo_root)
-    service = OverseerChatService(codex_store, task_store, integrator, human_api)
-    service.start()
-    stop = threading.Event()
-    printer = threading.Thread(target=_print_event_stream, args=(service, stop), daemon=True)
-    printer.start()
-    print("Overseer chat started. Use /run, /queue, /open, /quit.")
-    try:
-        while True:
-            try:
-                raw = input("overseer> ").strip()
-            except EOFError:
-                print("Session ended.")
-                break
-            if not raw:
+    graph = OverseerCoreGraph.build(
+        codex_store=codex_store,
+        task_store=task_store,
+        human_api=human_api,
+        backend=backend,
+        integrator=integrator,
+        llm=FakeLLM(default_response="Acknowledged. I can keep chatting while runs execute."),
+    )
+    session_id = graph.create_session()
+    print(f"Overseer chat started. Session={session_id}")
+    print("Commands: /new, /resume <id>, /status, /plan, /tick, /exit")
+    while True:
+        try:
+            raw = input("overseer> ").strip()
+        except EOFError:
+            print("Session ended.")
+            break
+        if not raw:
+            continue
+        if raw == "/exit":
+            print("Session ended.")
+            break
+        if raw == "/new":
+            session_id = graph.create_session()
+            print(f"created session {session_id}")
+            continue
+        if raw.startswith("/resume "):
+            session_id = raw.split(" ", 1)[1].strip()
+            graph.load_state(session_id)
+            print(f"resumed {session_id}")
+            continue
+        if raw == "/status":
+            state = graph.load_state(session_id)
+            print(
+                f"mode={state.get('mode')} active_runs={len(state.get('active_runs', {}))} "
+                f"pending_human={','.join(state.get('pending_human_requests', [])) or '-'}"
+            )
+            continue
+        if raw == "/plan":
+            state = graph.load_state(session_id)
+            if not state.get("plan"):
+                print("No plan yet.")
                 continue
-            try:
-                if raw.startswith("/"):
-                    out = service.handle_command(raw)
-                else:
-                    out = service.handle_message(raw)
-                print(out["assistant_text"])
-                if out.get("exit"):
-                    break
-            except ValueError as exc:
-                print(f"error: {exc}")
-    finally:
-        stop.set()
-        printer.join(timeout=1)
-        service.stop()
+            for step in state["plan"]:
+                print(f"{step['id']} [{step['status']}] {step['title']}")
+            continue
+        if raw == "/tick":
+            state = graph.tick(session_id)
+            print(state.get("latest_response", "Tick complete."))
+            continue
+
+        if raw.startswith("/"):
+            print("error: unknown command")
+            continue
+
+        state = graph.submit_user_message(session_id, raw)
+        print(state.get("latest_response", "ok"))
+    return 0
+
+
+def cmd_session_list(args: argparse.Namespace) -> int:
+    codex_store, task_store, human_api, backend = _services(Path(args.repo_root))
+    integrator = _build_integrator(codex_store.repo_root)
+    graph = OverseerCoreGraph.build(
+        codex_store=codex_store,
+        task_store=task_store,
+        human_api=human_api,
+        backend=backend,
+        integrator=integrator,
+        llm=FakeLLM(),
+    )
+    for session_id in graph.list_sessions():
+        print(session_id)
     return 0
 
 
@@ -321,6 +349,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     chat_parser = subparsers.add_parser("chat")
     chat_parser.set_defaults(func=cmd_chat)
+
+    session_parser = subparsers.add_parser("session")
+    session_subparsers = session_parser.add_subparsers(dest="session_command", required=True)
+    session_list_parser = session_subparsers.add_parser("list")
+    session_list_parser.set_defaults(func=cmd_session_list)
 
     return parser
 

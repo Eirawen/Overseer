@@ -326,7 +326,7 @@ def test_chat_accepts_commands_while_run_active(tmp_path: Path) -> None:
     proc = subprocess.run(
         [sys.executable, "-m", "overseer", "--repo-root", str(repo), "chat"],
         cwd=Path(__file__).resolve().parents[1],
-        input="ship objective\n/run list\n/quit\n",
+        input="ship objective\n/status\n/tick\n/exit\n",
         capture_output=True,
         text=True,
         check=False,
@@ -336,8 +336,8 @@ def test_chat_accepts_commands_while_run_active(tmp_path: Path) -> None:
 
     assert proc.returncode == 0
     assert "Overseer chat started" in proc.stdout
-    assert "Run IDs:" in proc.stdout
-    assert "status=" in proc.stdout
+    assert "Session=" in proc.stdout
+    assert "mode=" in proc.stdout
     assert "Session ended." in proc.stdout
 
 
@@ -351,7 +351,7 @@ def test_chat_reports_command_errors_and_continues(tmp_path: Path) -> None:
     proc = subprocess.run(
         [sys.executable, "-m", "overseer", "--repo-root", str(repo), "chat"],
         cwd=Path(__file__).resolve().parents[1],
-        input="/run status\n/quit\n",
+        input="/unknown command\n/status\n/exit\n",
         capture_output=True,
         text=True,
         check=False,
@@ -360,5 +360,31 @@ def test_chat_reports_command_errors_and_continues(tmp_path: Path) -> None:
     )
 
     assert proc.returncode == 0
-    assert "error: usage: /run" in proc.stdout
+    assert "Overseer chat started" in proc.stdout
+    assert "error: unknown command" in proc.stdout
+    assert "mode=" in proc.stdout
     assert "Session ended." in proc.stdout
+
+
+def test_session_list_command(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    init_git_repo(repo)
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"), "OVERSEER_EXECUTION_BACKEND": "local"}
+    subprocess.run(
+        [sys.executable, "-m", "overseer", "--repo-root", str(repo), "chat"],
+        cwd=Path(__file__).resolve().parents[1],
+        input="/exit\n",
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+        timeout=15,
+    )
+
+    listed = run_cli(repo, "session", "list")
+    assert listed.returncode == 0
+    assert "sess-" in listed.stdout
