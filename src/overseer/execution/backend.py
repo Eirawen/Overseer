@@ -8,14 +8,15 @@ import sys
 import threading
 import time
 from dataclasses import asdict, dataclass
+from uuid import uuid4
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Protocol
-from uuid import uuid4
 
-from overseer.fs import atomic_write_text, test_delay_meta_after_read
+from overseer.fs import atomic_write_text
 from overseer.human_api import HumanAPI
 from overseer.locks import file_lock
+from overseer.execution.run_store import RunStore, RunSubmission, SQLiteRunStore
 
 RunStatus = Literal["queued", "running", "canceling", "done", "failed", "canceled"]
 
@@ -52,13 +53,8 @@ class ExecutionRecord:
     exit_code: int | None = None
     worker_pid: int | None = None
     notes_enforced: bool = False
-
-
-@dataclass(frozen=True)
-class RunEvent:
-    type: str
-    at: str
-    payload: dict[str, Any]
+    failure_reason: str | None = None
+    heartbeat_at: str | None = None
 
 
 class ExecutionBackend(Protocol):
@@ -70,143 +66,244 @@ class ExecutionBackend(Protocol):
 
     def cancel(self, run_id: str) -> ExecutionRecord: ...
 
+    def reconcile(self, stale_after_seconds: int) -> list[ExecutionRecord]: ...
+
 
 class LocalBackend:
     def __init__(
-        self, codex_root: Path, human_api: HumanAPI | None = None, worker_role: str = "builder"
+        self,
+        codex_root: Path,
+        human_api: HumanAPI | None = None,
+        worker_role: str = "builder",
+        run_store: RunStore | None = None,
     ) -> None:
         self.codex_root = codex_root
         self.runs_root = codex_root / "08_TELEMETRY" / "runs"
         self.runs_root.mkdir(parents=True, exist_ok=True)
         self.human_api = human_api
         self.worker_role = worker_role
+        self.run_store = run_store or SQLiteRunStore(codex_root)
 
     @staticmethod
     def new_run_id() -> str:
         return f"run-{uuid4().hex[:12]}"
 
-    def _meta_lock_path(self, meta_path: Path) -> Path:
-        return meta_path.parent / "meta.lock"
+    def _normalize_run_id(self, run_id: str | Path) -> str:
+        if isinstance(run_id, Path):
+            return run_id.parent.name
+        return run_id
 
-    def _events_path(self, meta_path: Path) -> Path:
-        return meta_path.parent / "events.jsonl"
+    def _events_path(self, run_id: str | Path) -> Path:
+        rid = self._normalize_run_id(run_id)
+        return self.runs_root / rid / "events.jsonl"
 
-    def _events_lock_path(self, meta_path: Path) -> Path:
-        return meta_path.parent / "events.lock"
+    def _events_lock_path(self, run_id: str | Path) -> Path:
+        rid = self._normalize_run_id(run_id)
+        return self.runs_root / rid / "events.lock"
+
+    def _append_event(self, run_id: str | Path, event_type: str, payload: dict[str, Any]) -> None:
+        rid = self._normalize_run_id(run_id)
+        if event_type == "started" and isinstance(payload.get("record"), dict):
+            record_payload = payload["record"]
+            if not self._run_exists(rid):
+                rec = ExecutionRecord(**record_payload)
+                self._write_record(Path(rec.meta_path), rec)
+        self.run_store.append_event(rid, event_type, payload)
+        event = {
+            "type": event_type,
+            "at": datetime.now(timezone.utc).isoformat(),
+            "payload": payload,
+        }
+        events_path = self._events_path(rid)
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        with events_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, sort_keys=True) + "\n")
+
+    def _record_to_meta(self, record: ExecutionRecord) -> dict[str, Any]:
+        return asdict(record)
+
+    def _write_meta(self, record: ExecutionRecord) -> None:
+        if not record.meta_path:
+            return
+        atomic_write_text(Path(record.meta_path), json.dumps(self._record_to_meta(record), indent=2) + "\n")
+
+    def _meta_lock_path(self, path: Path) -> Path:
+        return path.parent / "meta.lock"
+
+    def _read_record(self, path: Path) -> ExecutionRecord:
+        with file_lock(self._meta_lock_path(path)):
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        return ExecutionRecord(**payload)
+
+    def _write_record(self, path: Path, record: ExecutionRecord) -> None:
+        with file_lock(self._meta_lock_path(path)):
+            if not self._run_exists(record.run_id):
+                try:
+                    self.run_store.create_run(
+                        RunSubmission(
+                            run_id=record.run_id,
+                            task_id=record.task_id,
+                            backend_type=self.__class__.__name__.replace("Backend", "").lower(),
+                            worktree_path=record.cwd,
+                            pid=record.worker_pid,
+                            meta_json=asdict(record),
+                        )
+                    )
+                except ValueError:
+                    pass
+            self.run_store.update_status(
+                record.run_id,
+                record.status,
+                reason=record.failure_reason,
+                updated_fields={
+                    "task_id": record.task_id,
+                    "pid": record.worker_pid,
+                    "exit_code": record.exit_code,
+                    "meta_json": asdict(record),
+                },
+            )
+            atomic_write_text(path, json.dumps(asdict(record), indent=2) + "\n")
+
+    def _run_exists(self, run_id: str) -> bool:
+        try:
+            self.run_store.get_run(run_id)
+            return True
+        except FileNotFoundError:
+            return False
+
+    def _to_record(self, run: Any) -> ExecutionRecord:
+        meta = run.meta_json or {}
+        return ExecutionRecord(
+            run_id=run.run_id,
+            task_id=run.task_id or meta.get("task_id", ""),
+            status=run.status,
+            command=list(meta.get("command", [])),
+            cwd=meta.get("cwd", run.worktree_path),
+            stdout_log=meta.get("stdout_log", ""),
+            stderr_log=meta.get("stderr_log", ""),
+            meta_path=meta.get("meta_path", str(self.runs_root / run.run_id / "meta.json")),
+            lock_path=meta.get("lock_path", ""),
+            created_at=run.created_at,
+            started_at=meta.get("started_at"),
+            ended_at=meta.get("ended_at"),
+            exit_code=run.exit_code,
+            worker_pid=run.pid,
+            notes_enforced=bool(meta.get("notes_enforced", False)),
+            failure_reason=run.failure_reason,
+            heartbeat_at=run.heartbeat_at,
+        )
+
+    def _persist_record(self, record: ExecutionRecord, status: str | None = None, reason: str | None = None) -> ExecutionRecord:
+        meta = self._record_to_meta(record)
+        updated_fields = {
+            "task_id": record.task_id,
+            "pid": record.worker_pid,
+            "exit_code": record.exit_code,
+            "meta_json": meta,
+        }
+        target_status = status or record.status
+        run = self.run_store.update_status(record.run_id, target_status, reason=reason, updated_fields=updated_fields)
+        refreshed = self._to_record(run)
+        self._write_meta(refreshed)
+        return refreshed
 
     def submit(self, request: ExecutionRequest) -> str:
         request.stdout_log.parent.mkdir(parents=True, exist_ok=True)
         request.stderr_log.parent.mkdir(parents=True, exist_ok=True)
-        record = ExecutionRecord(
-            run_id=request.run_id,
-            task_id=request.task_id,
-            status="queued",
-            command=request.command,
-            cwd=str(request.cwd),
-            stdout_log=str(request.stdout_log),
-            stderr_log=str(request.stderr_log),
-            meta_path=str(request.meta_path),
-            lock_path=str(request.lock_path),
-            created_at=datetime.now(timezone.utc).isoformat(),
-        )
-        with file_lock(self._events_lock_path(request.meta_path)):
-            self._append_event(
-                request.meta_path,
-                "started",
-                {
-                    "record": asdict(record),
-                },
+        meta = {
+            "task_id": request.task_id,
+            "command": request.command,
+            "cwd": str(request.cwd),
+            "stdout_log": str(request.stdout_log),
+            "stderr_log": str(request.stderr_log),
+            "meta_path": str(request.meta_path),
+            "lock_path": str(request.lock_path),
+            "started_at": None,
+            "ended_at": None,
+            "notes_enforced": False,
+        }
+        self.run_store.create_run(
+            RunSubmission(
+                run_id=request.run_id,
+                task_id=request.task_id,
+                backend_type=self.__class__.__name__.replace("Backend", "").lower(),
+                worktree_path=str(request.cwd),
+                meta_json=meta,
             )
+        )
+        self._append_event(request.run_id, "started", {"record": meta})
 
         worker_command = [
             sys.executable,
             "-m",
             "overseer",
             "execution-worker",
-            "--meta",
-            str(request.meta_path),
+            "--run-id",
+            request.run_id,
+            "--codex-root",
+            str(self.codex_root),
         ]
         env = os.environ.copy()
         env.setdefault("PYTHONPATH", str(Path(__file__).resolve().parents[2]))
-        process = subprocess.Popen(
-            worker_command, cwd=request.cwd, env=env, start_new_session=True
-        )  # noqa: S603
-        with file_lock(self._events_lock_path(request.meta_path)):
-            self._append_event(request.meta_path, "status_change", {"worker_pid": process.pid})
+        process = subprocess.Popen(worker_command, cwd=request.cwd, env=env, start_new_session=True)  # noqa: S603
+        run = self.run_store.update_status(request.run_id, "queued", updated_fields={"pid": process.pid})
+        self._append_event(request.run_id, "status_change", {"worker_pid": process.pid})
+        self._write_meta(self._to_record(run))
         return request.run_id
 
-    def status(self, run_id: str) -> ExecutionRecord:
+    def _hydrate_from_meta_if_needed(self, run_id: str) -> None:
+        if self._run_exists(run_id):
+            return
         meta_path = self.runs_root / run_id / "meta.json"
-        with file_lock(self._events_lock_path(meta_path)):
-            record = self._derive_record(meta_path)
-            return self._enforce_required_notes(record, meta_path)
+        if not meta_path.exists():
+            return
+        record = self._read_record(meta_path)
+        self._write_record(meta_path, record)
+
+    def status(self, run_id: str) -> ExecutionRecord:
+        self._hydrate_from_meta_if_needed(run_id)
+        record = self._to_record(self.run_store.get_run(run_id))
+        record = self._enforce_required_notes(record)
+        self._write_meta(record)
+        return record
 
     def list_runs(self) -> list[ExecutionRecord]:
-        records: list[ExecutionRecord] = []
-        for meta in sorted(self.runs_root.glob("*/meta.json")):
-            with file_lock(self._events_lock_path(meta)):
-                record = self._derive_record(meta)
-                records.append(self._enforce_required_notes(record, meta))
-        return records
+        return [self._enforce_required_notes(self._to_record(run)) for run in self.run_store.list_runs()]
 
     def cancel(self, run_id: str) -> ExecutionRecord:
-        meta_path = self.runs_root / run_id / "meta.json"
-        with file_lock(self._events_lock_path(meta_path)):
-            record = self._derive_record(meta_path)
-            test_delay_meta_after_read()
-            if record.status in TERMINAL_STATUSES:
-                return record
-            self._append_event(
-                meta_path,
-                "cancel_requested",
-                {
-                    "requested_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
-            if record.status != "canceling":
-                self._append_event(
-                    meta_path,
-                    "status_change",
-                    {
-                        "status": "canceling",
-                    },
-                )
-            if record.worker_pid is not None:
-                try:
-                    os.kill(record.worker_pid, signal.SIGTERM)
-                except OSError:
-                    pass
-            if record.status == "queued":
-                self._append_event(
-                    meta_path,
-                    "canceled",
-                    {
-                        "ended_at": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
-            return self._derive_record(meta_path)
+        self._hydrate_from_meta_if_needed(run_id)
+        record = self._to_record(self.run_store.get_run(run_id))
+        if record.status in TERMINAL_STATUSES:
+            return record
+        self._append_event(run_id, "cancel_requested", {"requested_at": datetime.now(timezone.utc).isoformat()})
+        self.run_store.update_status(run_id, "canceling")
+        if record.worker_pid is not None:
+            try:
+                os.kill(record.worker_pid, signal.SIGTERM)
+            except OSError:
+                pass
+        if record.status == "queued":
+            record.status = "canceled"
+            record.ended_at = datetime.now(timezone.utc).isoformat()
+            self._append_event(run_id, "canceled", {"ended_at": record.ended_at})
+            return self._persist_record(record, status="canceled")
+        record.status = "canceling"
+        return self._persist_record(record, status="canceling")
 
-    def run_worker(self, meta_path: Path) -> int:
-        meta_path = Path(meta_path)
-        with file_lock(self._events_lock_path(meta_path)):
-            record = self._derive_record(meta_path)
-            test_delay_meta_after_read()
-            if record.status in {"canceling", "canceled"}:
-                if record.status == "canceling":
-                    self._append_event(
-                        meta_path,
-                        "canceled",
-                        {
-                            "ended_at": datetime.now(timezone.utc).isoformat(),
-                        },
-                    )
-                return 1
-            self._append_event(
-                meta_path,
-                "status_change",
-                {"status": "running", "started_at": datetime.now(timezone.utc).isoformat()},
-            )
-            record = self._derive_record(meta_path)
+    def run_worker(self, run_id: str | Path) -> int:
+        run_id = self._normalize_run_id(run_id)
+        record = self._to_record(self.run_store.get_run(run_id))
+        if record.status in {"canceling", "canceled"}:
+            if record.status == "canceling":
+                self.cancel(run_id)
+            return 1
+
+        record.status = "running"
+        record.started_at = datetime.now(timezone.utc).isoformat()
+        record.worker_pid = os.getpid()
+        record = self._persist_record(record, status="running")
+        self.run_store.heartbeat(run_id)
+        self._append_event(run_id, "status_change", {"status": "running", "started_at": record.started_at})
 
         with file_lock(Path(record.lock_path)):
             with (
@@ -228,60 +325,65 @@ class LocalBackend:
                     for chunk in iter(stream.readline, ""):
                         handle.write(chunk)
                         handle.flush()
-                        with file_lock(self._events_lock_path(meta_path)):
-                            self._append_event(meta_path, event_type, {"chunk": chunk})
+                        self._append_event(run_id, event_type, {"chunk": chunk})
                     stream.close()
 
-                stdout_thread = threading.Thread(
-                    target=stream_output, args=(process.stdout, stdout_handle, "stdout"), daemon=True
-                )
-                stderr_thread = threading.Thread(
-                    target=stream_output, args=(process.stderr, stderr_handle, "stderr"), daemon=True
-                )
+                stdout_thread = threading.Thread(target=stream_output, args=(process.stdout, stdout_handle, "stdout"), daemon=True)
+                stderr_thread = threading.Thread(target=stream_output, args=(process.stderr, stderr_handle, "stderr"), daemon=True)
                 stdout_thread.start()
                 stderr_thread.start()
 
                 while process.poll() is None:
-                    with file_lock(self._events_lock_path(meta_path)):
-                        refreshed = self._derive_record(meta_path)
-                        if refreshed.status in {"canceling", "canceled"}:
-                            process.terminate()
-                            try:
-                                process.wait(timeout=2)
-                            except subprocess.TimeoutExpired:
-                                process.kill()
-                                process.wait(timeout=2)
-                            break
-                    time.sleep(0.1)
+                    refreshed = self._to_record(self.run_store.get_run(run_id))
+                    if refreshed.status in {"canceling", "canceled"}:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait(timeout=2)
+                        break
+                    self.run_store.heartbeat(run_id)
+                    time.sleep(0.5)
+
                 result_exit_code = process.wait()
                 stdout_thread.join(timeout=2)
                 stderr_thread.join(timeout=2)
 
         self._write_required_notes(record)
 
-        with file_lock(self._events_lock_path(meta_path)):
-            record = self._derive_record(meta_path)
-            test_delay_meta_after_read()
-            if record.status == "canceling":
-                self._append_event(
-                    meta_path,
-                    "canceled",
-                    {
-                        "ended_at": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
-                record = self._derive_record(meta_path)
-            if record.status not in TERMINAL_STATUSES:
-                self._append_event(
-                    meta_path,
-                    "completed",
-                    {
-                        "ended_at": datetime.now(timezone.utc).isoformat(),
-                        "exit_code": result_exit_code,
-                        "status": "done" if result_exit_code == 0 else "failed",
-                    },
-                )
+        refreshed = self._to_record(self.run_store.get_run(run_id))
+        if refreshed.status == "canceling":
+            return self.cancel(run_id).exit_code or 1
+        if refreshed.status not in TERMINAL_STATUSES:
+            refreshed.ended_at = datetime.now(timezone.utc).isoformat()
+            refreshed.exit_code = result_exit_code
+            refreshed.status = "done" if result_exit_code == 0 else "failed"
+            reason = None if refreshed.status == "done" else "process_failed"
+            self._append_event(
+                run_id,
+                "completed",
+                {"ended_at": refreshed.ended_at, "exit_code": refreshed.exit_code, "status": refreshed.status},
+            )
+            self._persist_record(refreshed, status=refreshed.status, reason=reason)
         return result_exit_code
+
+    def reconcile(self, stale_after_seconds: int) -> list[ExecutionRecord]:
+        now = datetime.now(timezone.utc)
+        reconciled: list[ExecutionRecord] = []
+        for run in self.run_store.list_runs(filters={"status": "running"}):
+            if not run.heartbeat_at:
+                continue
+            heartbeat_at = datetime.fromisoformat(run.heartbeat_at)
+            if (now - heartbeat_at).total_seconds() <= stale_after_seconds:
+                continue
+            record = self._to_record(run)
+            record.status = "failed"
+            record.ended_at = now.isoformat()
+            record.failure_reason = "worker_lost"
+            self._append_event(record.run_id, "reconciled", {"from": "running", "to": "failed", "reason": "worker_lost"})
+            reconciled.append(self._persist_record(record, status="failed", reason="worker_lost"))
+        return reconciled
 
     def _write_required_notes(self, record: ExecutionRecord) -> None:
         timestamp = datetime.now(timezone.utc).isoformat()
@@ -295,7 +397,7 @@ class LocalBackend:
         with worker_notes.open("a", encoding="utf-8") as handle:
             handle.write(f"- [{timestamp}] run={record.run_id} task={record.task_id}\n")
 
-    def _enforce_required_notes(self, record: ExecutionRecord, meta_path: Path) -> ExecutionRecord:
+    def _enforce_required_notes(self, record: ExecutionRecord) -> ExecutionRecord:
         if record.status not in REQUIRES_NOTES_STATUSES or record.notes_enforced:
             return record
 
@@ -306,8 +408,7 @@ class LocalBackend:
 
         if has_run_notes and has_worker_notes:
             record.notes_enforced = True
-            self._write_record(meta_path, record)
-            return record
+            return self._persist_record(record)
 
         record.status = "failed"
         record.notes_enforced = True
@@ -315,93 +416,12 @@ class LocalBackend:
             record.exit_code = 1
         if record.ended_at is None:
             record.ended_at = datetime.now(timezone.utc).isoformat()
-        self._append_event(meta_path, "escalated", {"reason": "missing required notes"})
-        self._write_record(meta_path, record)
+        self._append_event(record.run_id, "escalated", {"reason": "missing required notes"})
+        saved = self._persist_record(record, status="failed", reason="missing required notes")
         if self.human_api is not None:
             self.human_api.append_request({"id": record.task_id}, "missing required notes", run_id=record.run_id)
-        return record
+        return saved
 
-    def _write_record(self, path: Path, record: ExecutionRecord) -> None:
-        text = json.dumps(asdict(record), indent=2) + "\n"
-        atomic_write_text(path, text)
-
-    def _read_record(self, path: Path) -> ExecutionRecord:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        return ExecutionRecord(**payload)
-
-    def _append_event(self, meta_path: Path, event_type: str, payload: dict[str, Any]) -> None:
-        events_path = self._events_path(meta_path)
-        events_path.parent.mkdir(parents=True, exist_ok=True)
-        events = self._read_events(events_path)
-        if not events and event_type != "started" and meta_path.exists():
-            seed = RunEvent(
-                type="started",
-                at=datetime.now(timezone.utc).isoformat(),
-                payload={"record": asdict(self._read_record(meta_path))},
-            )
-            with events_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(asdict(seed), sort_keys=True) + "\n")
-            events = [seed]
-
-        event = RunEvent(type=event_type, at=datetime.now(timezone.utc).isoformat(), payload=payload)
-        with events_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(asdict(event), sort_keys=True) + "\n")
-        events.append(event)
-        record = self._reduce_events(events)
-        self._write_record(meta_path, record)
-
-    def _read_events(self, events_path: Path) -> list[RunEvent]:
-        if not events_path.exists():
-            return []
-        events: list[RunEvent] = []
-        with events_path.open(encoding="utf-8") as handle:
-            for line in handle:
-                text = line.strip()
-                if not text:
-                    continue
-                payload = json.loads(text)
-                events.append(RunEvent(type=payload["type"], at=payload["at"], payload=payload["payload"]))
-        return events
-
-    def _derive_record(self, meta_path: Path) -> ExecutionRecord:
-        events_path = self._events_path(meta_path)
-        events = self._read_events(events_path)
-        if events:
-            record = self._reduce_events(events)
-            self._write_record(meta_path, record)
-            return record
-        return self._read_record(meta_path)
-
-    def _reduce_events(self, events: list[RunEvent]) -> ExecutionRecord:
-        if not events:
-            raise ValueError("cannot reduce empty event stream")
-        first = events[0]
-        if first.type != "started":
-            raise ValueError("first run event must be started")
-        record = ExecutionRecord(**first.payload["record"])
-        for event in events[1:]:
-            payload = event.payload
-            if event.type == "status_change":
-                if "status" in payload:
-                    record.status = payload["status"]
-                if "started_at" in payload:
-                    record.started_at = payload["started_at"]
-                if "worker_pid" in payload:
-                    record.worker_pid = payload["worker_pid"]
-            elif event.type == "canceled":
-                record.status = "canceled"
-                record.ended_at = payload.get("ended_at", event.at)
-            elif event.type == "cancel_requested":
-                continue
-            elif event.type == "completed":
-                record.status = payload["status"]
-                record.ended_at = payload.get("ended_at", event.at)
-                record.exit_code = payload.get("exit_code")
-            elif event.type == "escalated":
-                record.status = "failed"
-            elif event.type in {"stdout", "stderr", "summary_written", "worker_dispatched"}:
-                continue
-        return record
 
 class CeleryBackend(LocalBackend):
     def __init__(
@@ -409,10 +429,11 @@ class CeleryBackend(LocalBackend):
         codex_root: Path,
         human_api: HumanAPI | None = None,
         worker_role: str = "builder",
+        run_store: RunStore | None = None,
         celery_app: Any | None = None,
         task_name: str = "overseer.execution.celery_worker.execute_run",
     ) -> None:
-        super().__init__(codex_root=codex_root, human_api=human_api, worker_role=worker_role)
+        super().__init__(codex_root=codex_root, human_api=human_api, worker_role=worker_role, run_store=run_store)
         if celery_app is None:
             from overseer.execution.celery_app import build_celery_app
 
@@ -424,49 +445,45 @@ class CeleryBackend(LocalBackend):
     def submit(self, request: ExecutionRequest) -> str:
         request.stdout_log.parent.mkdir(parents=True, exist_ok=True)
         request.stderr_log.parent.mkdir(parents=True, exist_ok=True)
-        record = ExecutionRecord(
-            run_id=request.run_id,
-            task_id=request.task_id,
-            status="queued",
-            command=request.command,
-            cwd=str(request.cwd),
-            stdout_log=str(request.stdout_log),
-            stderr_log=str(request.stderr_log),
-            meta_path=str(request.meta_path),
-            lock_path=str(request.lock_path),
-            created_at=datetime.now(timezone.utc).isoformat(),
-        )
-        with file_lock(self._events_lock_path(request.meta_path)):
-            self._append_event(
-                request.meta_path,
-                "started",
-                {
-                    "record": asdict(record),
-                },
+        meta = {
+            "task_id": request.task_id,
+            "command": request.command,
+            "cwd": str(request.cwd),
+            "stdout_log": str(request.stdout_log),
+            "stderr_log": str(request.stderr_log),
+            "meta_path": str(request.meta_path),
+            "lock_path": str(request.lock_path),
+            "started_at": None,
+            "ended_at": None,
+            "notes_enforced": False,
+        }
+        self.run_store.create_run(
+            RunSubmission(
+                run_id=request.run_id,
+                task_id=request.task_id,
+                backend_type="celery",
+                worktree_path=str(request.cwd),
+                meta_json=meta,
             )
-
+        )
+        self._append_event(request.run_id, "started", {"record": meta})
         async_result = self.celery_app.send_task(
             self.task_name,
-            args=[str(request.meta_path), str(self.codex_root)],
+            args=[request.run_id, str(self.codex_root)],
         )
-        with file_lock(self._events_lock_path(request.meta_path)):
-            self._append_event(
-                request.meta_path,
-                "worker_dispatched",
-                {"celery_task_id": getattr(async_result, "id", None)},
-            )
+        self._append_event(request.run_id, "worker_dispatched", {"celery_task_id": getattr(async_result, "id", None)})
+        self._write_meta(self._to_record(self.run_store.get_run(request.run_id)))
         return request.run_id
 
     def cancel(self, run_id: str) -> ExecutionRecord:
         record = super().cancel(run_id)
-        meta_path = self.runs_root / run_id / "meta.json"
         task_id = None
-        events = self._read_events(self._events_path(meta_path))
-        for event in reversed(events):
-            if event.type == "worker_dispatched":
-                task_id = event.payload.get("celery_task_id")
-                if task_id:
-                    break
+        if isinstance(self.run_store, SQLiteRunStore):
+            for event in reversed(self.run_store.list_events(run_id)):
+                if event.type == "worker_dispatched":
+                    task_id = event.payload.get("celery_task_id")
+                    if task_id:
+                        break
         if task_id:
             self.celery_app.control.revoke(task_id, terminate=True)
         return record

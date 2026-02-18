@@ -71,13 +71,13 @@ def test_run_agent_and_status(tmp_path: Path) -> None:
     deadline = time.time() + 10
     status_output = ""
     while time.time() < deadline:
-        status_output = run_cli(repo, "run-status", "--run", run_id, env=env).stdout
+        status_output = run_cli(repo, "runs", "show", "--run", run_id, env=env).stdout
         if "status=done" in status_output or "status=failed" in status_output:
             break
         time.sleep(0.1)
 
     assert "task=" in status_output
-    runs_output = run_cli(repo, "runs", env=env).stdout
+    runs_output = run_cli(repo, "runs", "list", env=env).stdout
     assert run_id in runs_output
 
 
@@ -154,34 +154,22 @@ def test_run_cancel_command(tmp_path: Path) -> None:
     run_id = "run-cancel-cli"
     run_dir = repo / "codex" / "08_TELEMETRY" / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    meta = run_dir / "meta.json"
-    meta.write_text(
-        """{
-  "run_id": "run-cancel-cli",
-  "task_id": "task-1",
-  "status": "queued",
-  "command": [],
-  "cwd": ".",
-  "stdout_log": "stdout.log",
-  "stderr_log": "stderr.log",
-  "meta_path": "meta.json",
-  "lock_path": "lock",
-  "created_at": "2020-01-01T00:00:00Z",
-  "started_at": null,
-  "ended_at": null,
-  "exit_code": null,
-  "worker_pid": null,
-  "notes_enforced": false
-}
-""",
-        encoding="utf-8",
-    )
-    (run_dir / "events.jsonl").write_text(
-        "{\"type\":\"started\",\"at\":\"2020-01-01T00:00:00Z\",\"payload\":{\"record\":{\"run_id\":\"run-cancel-cli\",\"task_id\":\"task-1\",\"status\":\"queued\",\"command\":[],\"cwd\":\".\",\"stdout_log\":\"stdout.log\",\"stderr_log\":\"stderr.log\",\"meta_path\":\"meta.json\",\"lock_path\":\"lock\",\"created_at\":\"2020-01-01T00:00:00Z\",\"started_at\":null,\"ended_at\":null,\"exit_code\":null,\"worker_pid\":null,\"notes_enforced\":false}}}\n",
-        encoding="utf-8",
-    )
+    meta_json = '{"task_id":"task-1","command":[],"cwd":".","stdout_log":"stdout.log","stderr_log":"stderr.log","meta_path":"meta.json","lock_path":"lock"}'
 
-    cancel_output = run_cli(repo, "run-cancel", "--run", run_id).stdout
+    import sqlite3
+
+    db = repo / "codex" / "08_TELEMETRY" / "overseer.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE IF NOT EXISTS runs (run_id TEXT PRIMARY KEY, task_id TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, heartbeat_at TEXT, backend_type TEXT NOT NULL, worktree_path TEXT NOT NULL, pid INTEGER, exit_code INTEGER, failure_reason TEXT, meta_json TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS run_events (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, type TEXT NOT NULL, at TEXT NOT NULL, payload_json TEXT NOT NULL)")
+    conn.execute(
+        "INSERT INTO runs (run_id, task_id, status, created_at, updated_at, heartbeat_at, backend_type, worktree_path, pid, exit_code, failure_reason, meta_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, "task-1", "queued", "2020-01-01T00:00:00Z", "2020-01-01T00:00:00Z", "2020-01-01T00:00:00Z", "local", ".", None, None, None, meta_json),
+    )
+    conn.commit()
+    conn.close()
+
+    cancel_output = run_cli(repo, "runs", "cancel", "--run", run_id).stdout
     assert f"{run_id} task=" in cancel_output
     assert "status=canceled" in cancel_output
 

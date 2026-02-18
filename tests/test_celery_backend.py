@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from overseer.execution.backend import CeleryBackend, ExecutionRecord, ExecutionRequest, LocalBackend
+from overseer.execution.backend import CeleryBackend, ExecutionRequest, LocalBackend
 from overseer.execution.factory import build_backend
-from overseer.locks import file_lock
+from overseer.execution.run_store import RunSubmission
 
 
 class _FakeAsyncResult:
@@ -37,7 +37,6 @@ class _FakeCeleryApp:
 
 def test_celery_backend_submit_dispatches_task_and_persists_events(tmp_path: Path) -> None:
     codex_root = tmp_path / "codex"
-    codex_root.mkdir(parents=True)
     run_id = LocalBackend.new_run_id()
     run_root = codex_root / "08_TELEMETRY" / "runs" / run_id
     req = ExecutionRequest(
@@ -59,7 +58,7 @@ def test_celery_backend_submit_dispatches_task_and_persists_events(tmp_path: Pat
     assert fake_app.calls == [
         (
             "overseer.execution.celery_worker.execute_run",
-            [str(req.meta_path), str(codex_root)],
+            [run_id, str(codex_root)],
         )
     ]
     events = [
@@ -72,28 +71,19 @@ def test_celery_backend_submit_dispatches_task_and_persists_events(tmp_path: Pat
 
 def test_celery_backend_cancel_revokes_dispatched_task(tmp_path: Path) -> None:
     codex_root = tmp_path / "codex"
-    codex_root.mkdir(parents=True)
     fake_app = _FakeCeleryApp()
     backend = CeleryBackend(codex_root=codex_root, celery_app=fake_app)
     run_id = "run-celery-cancel"
-    run_dir = codex_root / "08_TELEMETRY" / "runs" / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-    meta = run_dir / "meta.json"
-    record = ExecutionRecord(
-        run_id=run_id,
-        task_id="task-1",
-        status="queued",
-        command=[sys.executable, "-c", "pass"],
-        cwd=str(tmp_path),
-        stdout_log=str(run_dir / "stdout.log"),
-        stderr_log=str(run_dir / "stderr.log"),
-        meta_path=str(meta),
-        lock_path=str(tmp_path / "locks" / "x.lock"),
-        created_at="2020-01-01T00:00:00Z",
+    backend.run_store.create_run(
+        RunSubmission(
+            run_id=run_id,
+            task_id="task-1",
+            backend_type="celery",
+            worktree_path=str(tmp_path),
+            meta_json={"task_id": "task-1", "command": [sys.executable, "-c", "pass"], "cwd": str(tmp_path), "stdout_log": "", "stderr_log": "", "meta_path": str(codex_root / "08_TELEMETRY" / "runs" / run_id / "meta.json"), "lock_path": ""},
+        )
     )
-    with file_lock(backend._events_lock_path(meta)):
-        backend._append_event(meta, "started", {"record": record.__dict__})
-        backend._append_event(meta, "worker_dispatched", {"celery_task_id": "task-abc"})
+    backend._append_event(run_id, "worker_dispatched", {"celery_task_id": "task-abc"})
 
     backend.cancel(run_id)
 
