@@ -74,6 +74,8 @@ class HumanAPI:
         self.task_types_file = self.human_api_root / "HUMAN_TASK_TYPES.json"
         self.requests_dir = self.human_api_root / "requests"
         self._queue_lock = codex_store.codex_root / "10_OVERSEER" / "locks" / "human_queue.lock"
+        self._schema_cache: HumanRequestSchema | None = None
+        self._task_types_cache: tuple[HumanTaskType, ...] | None = None
 
     def ensure_queue(self) -> None:
         if not self.queue_file.exists():
@@ -82,6 +84,9 @@ class HumanAPI:
         self.requests_dir.mkdir(parents=True, exist_ok=True)
 
     def _load_schema(self) -> HumanRequestSchema:
+        if self._schema_cache is not None:
+            return self._schema_cache
+
         if not self.schema_file.exists():
             raise ValueError(f"missing request schema: {self.schema_file}")
 
@@ -101,9 +106,15 @@ class HumanAPI:
         if not allowed_types or not allowed_urgencies:
             raise ValueError("request schema must define TYPE and URGENCY enums")
 
-        return HumanRequestSchema(allowed_types=allowed_types, allowed_urgencies=allowed_urgencies)
+        self._schema_cache = HumanRequestSchema(
+            allowed_types=allowed_types, allowed_urgencies=allowed_urgencies
+        )
+        return self._schema_cache
 
     def validate_task_types(self) -> list[HumanTaskType]:
+        if self._task_types_cache is not None:
+            return list(self._task_types_cache)
+
         schema = self._load_schema()
         if not self.task_types_file.exists():
             raise ValueError(f"missing human task types config: {self.task_types_file}")
@@ -184,7 +195,8 @@ class HumanAPI:
             raise ValueError(
                 f"{self.task_types_file.name}: must include a '{_DEFAULT_TASK_TYPE_ID}' task type"
             )
-        return validated
+        self._task_types_cache = tuple(validated)
+        return list(self._task_types_cache)
 
     def list_task_types(self) -> list[HumanTaskType]:
         return sorted(self.validate_task_types(), key=lambda item: item.id)
