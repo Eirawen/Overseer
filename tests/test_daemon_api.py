@@ -86,6 +86,171 @@ def test_health_endpoint(tmp_path: Path) -> None:
         daemon.stop()
 
 
+def test_health_endpoint_includes_cors_for_local_ui_origin(tmp_path: Path) -> None:
+    class _DummyDaemon:
+        pass
+
+    with TestClient(create_app(_DummyDaemon())) as client:
+        response = client.get("/health", headers={"Origin": "http://127.0.0.1:5173"})
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") == "http://127.0.0.1:5173"
+
+
+def test_message_endpoint_validates_and_dispatches(tmp_path: Path) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    class _DummyDaemon:
+        def handle_message(self, text: str, session_id: str | None = None) -> dict[str, object]:
+            calls.append((text, session_id))
+            return {"assistant_text": f"echo: {text}", "created_run_ids": ["run-demo-123"], "session_id": session_id or "sess-aaaaaaaaaaaa"}
+
+    with TestClient(create_app(_DummyDaemon())) as client:
+        bad = client.post("/message", json={"text": "   "})
+        assert bad.status_code == 400
+
+        ok = client.post("/message", json={"text": "hello"})
+        assert ok.status_code == 200
+        assert ok.json()["assistant_text"] == "echo: hello"
+        assert calls[-1] == ("hello", None)
+
+        with_session = client.post("/message", json={"text": "/status", "session_id": "sess-1234567890ab"})
+        assert with_session.status_code == 200
+        assert calls[-1] == ("/status", "sess-1234567890ab")
+
+        invalid_session = client.post("/message", json={"text": "hello", "session_id": "../bad"})
+        assert invalid_session.status_code == 400
+
+
+def test_overseer_daemon_graph_backed_chat_auto_creates_session_and_supports_commands(tmp_path: Path) -> None:
+    class _DummyBackend:
+        def list_runs(self):
+            return []
+
+        runs_root = Path("/tmp/nonexistent")
+
+    class _DummyGraph:
+        def __init__(self) -> None:
+            self.states = {
+                "sess-aaaaaaaaaaaa": {
+                    "session_id": "sess-aaaaaaaaaaaa",
+                    "mode": "conversation",
+                    "conversation_turns": [],
+                    "active_runs": {},
+                    "pending_human_requests": [],
+                    "plan": [{"id": "step-1", "status": "pending", "title": "Do x"}],
+                    "latest_response": "",
+                }
+            }
+
+        def create_session(self) -> str:
+            return "sess-aaaaaaaaaaaa"
+
+        def list_sessions(self) -> list[str]:
+            return ["sess-aaaaaaaaaaaa"]
+
+        def load_state(self, session_id: str):
+            return self.states[session_id]
+
+        def submit_user_message(self, session_id: str, text: str):
+            state = dict(self.states[session_id])
+            state["latest_response"] = f"assistant:{text}"
+            state["mode"] = "waiting"
+            state["active_runs"] = {"run-111111111111": {"run_id": "run-111111111111"}}
+            state["conversation_turns"] = [
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": state["latest_response"]},
+            ]
+            self.states[session_id] = state
+            return state
+
+        def tick(self, session_id: str):
+            state = dict(self.states[session_id])
+            state["latest_response"] = "Tick processed."
+            state["conversation_turns"] = [
+                *state.get("conversation_turns", []),
+                {"role": "assistant", "content": "Tick processed."},
+            ]
+            self.states[session_id] = state
+            return state
+
+    class _DummyHandoff:
+        instance_id = "ovr-test"
+
+    daemon = OverseerDaemon(
+        backend=_DummyBackend(),  # type: ignore[arg-type]
+        integrator=object(),  # type: ignore[arg-type]
+        human_api=object(),  # type: ignore[arg-type]
+        overseer_graph=_DummyGraph(),  # type: ignore[arg-type]
+        handoff_service=_DummyHandoff(),  # type: ignore[arg-type]
+    )
+
+    first = daemon.handle_message("build x")
+    assert first["session_id"] == "sess-aaaaaaaaaaaa"
+    assert first["assistant_text"] == "assistant:build x"
+    assert first["created_run_ids"] == ["run-111111111111"]
+    assert first["run_id"] == "run-111111111111"
+    assert first["instance_id"] == "ovr-test"
+
+    status_reply = daemon.handle_message("/status", session_id="sess-aaaaaaaaaaaa")
+    assert "mode=" in str(status_reply["assistant_text"])
+    assert status_reply["session_id"] == "sess-aaaaaaaaaaaa"
+
+    plan_reply = daemon.handle_message("/plan", session_id="sess-aaaaaaaaaaaa")
+    assert "step-1 [pending] Do x" in str(plan_reply["assistant_text"])
+
+    tick_reply = daemon.handle_message("/tick", session_id="sess-aaaaaaaaaaaa")
+    assert tick_reply["assistant_text"] == "Tick processed."
+    assert tick_reply["session_id"] == "sess-aaaaaaaaaaaa"
+
+
+def test_session_endpoints_dispatch_to_daemon(tmp_path: Path) -> None:
+    class _DummyDaemon:
+        def create_overseer_session(self) -> dict[str, object]:
+            return {"session_id": "sess-aaaaaaaaaaaa", "assistant_text": "Created session sess-aaaaaaaaaaaa.", "mode": "conversation"}
+
+        def list_overseer_sessions(self) -> list[dict[str, object]]:
+            return [{"session_id": "sess-aaaaaaaaaaaa", "mode": "conversation", "active_run_count": 0}]
+
+        def get_overseer_session(self, session_id: str) -> dict[str, object]:
+            return {"session_id": session_id, "mode": "conversation", "conversation_turns": []}
+
+        def tick_overseer_session(self, session_id: str) -> dict[str, object]:
+            return {"session_id": session_id, "assistant_text": "Tick processed.", "mode": "waiting"}
+
+        def handle_message(self, text: str, session_id: str | None = None) -> dict[str, object]:
+            return {"session_id": session_id, "assistant_text": f"echo: {text}", "mode": "conversation"}
+
+    with TestClient(create_app(_DummyDaemon())) as client:
+        created = client.post("/sessions")
+        assert created.status_code == 200
+        assert created.json()["session_id"] == "sess-aaaaaaaaaaaa"
+
+        listed = client.get("/sessions")
+        assert listed.status_code == 200
+        assert listed.json()[0]["session_id"] == "sess-aaaaaaaaaaaa"
+
+        fetched = client.get("/sessions/sess-aaaaaaaaaaaa")
+        assert fetched.status_code == 200
+        assert fetched.json()["session_id"] == "sess-aaaaaaaaaaaa"
+
+        msg = client.post("/sessions/sess-aaaaaaaaaaaa/message", json={"text": "hello"})
+        assert msg.status_code == 200
+        assert msg.json()["assistant_text"] == "echo: hello"
+
+        msg_empty = client.post("/sessions/sess-aaaaaaaaaaaa/message", json={"text": "   "})
+        assert msg_empty.status_code == 400
+
+        msg_invalid = client.post("/sessions/not-a-session/message", json={"text": "hello"})
+        assert msg_invalid.status_code == 400
+
+        tick = client.post("/sessions/sess-aaaaaaaaaaaa/tick")
+        assert tick.status_code == 200
+        assert tick.json()["assistant_text"] == "Tick processed."
+
+        tick_invalid = client.post("/sessions/not-a-session/tick")
+        assert tick_invalid.status_code == 400
+
+
 def test_dummy_run_is_visible_in_runs_endpoint(tmp_path: Path) -> None:
     daemon, client, _, backend = _setup_daemon(tmp_path)
     try:

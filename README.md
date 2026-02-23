@@ -18,6 +18,15 @@ Run the web UI with one command:
 
 Then open `http://127.0.0.1:5173` and point the API root to your running daemon (default `http://127.0.0.1:8765`).
 
+One-command local dev stack (starts Overseer API + Vite UI, local backend by default):
+
+```bash
+./scripts/start-dev-ui.sh
+```
+
+The web chat now talks to `OverseerCoreGraph` sessions (not just run submission), so you can use normal prompts
+and chat commands like `/status`, `/plan`, `/tick`, `/new`, and `/resume <session_id>`.
+
 UI quality gates (TypeScript + frontend tests):
 
 ```bash

@@ -175,12 +175,30 @@ def cmd_human_types_list(args: argparse.Namespace) -> int:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
-    codex_store, _, human_api, backend = _services(Path(args.repo_root))
+    codex_store, task_store, human_api, backend = _services(Path(args.repo_root))
     codex_store.init_structure()
     integrator = _build_integrator(codex_store.repo_root)
+    handoff_service = HandoffService(codex_store, SessionStore(codex_store))
+    graph = OverseerCoreGraph.build(
+        codex_store=codex_store,
+        task_store=task_store,
+        human_api=human_api,
+        backend=backend,
+        integrator=integrator,
+        llm=FakeLLM(default_response="Acknowledged. I can keep chatting while runs execute."),
+        handoff_service=handoff_service,
+        instance_id=handoff_service.instance_id,
+    )
     from overseer.daemon_api import OverseerDaemon, serve_daemon
 
-    daemon = OverseerDaemon(backend=backend, integrator=integrator, human_api=human_api)
+    daemon = OverseerDaemon(
+        backend=backend,
+        integrator=integrator,
+        human_api=human_api,
+        task_store=task_store,
+        overseer_graph=graph,
+        handoff_service=handoff_service,
+    )
     serve_daemon(daemon, host=args.host, port=args.port)
     return 0
 

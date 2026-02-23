@@ -7,3 +7,4 @@ dependencies:
   - git
   - pip:
       - -e ".[dev]"
+      - websockets>=12,<16

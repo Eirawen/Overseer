@@ -39,6 +39,20 @@ In a second terminal, run the UI with a single command:
 
 Open `http://127.0.0.1:5173` in your browser.
 
+Or run the API + UI together (local execution backend):
+
+```bash
+./scripts/start-dev-ui.sh
+```
+
+The UI chat is session-backed and routes to `OverseerCoreGraph`. Useful commands from the web chat:
+
+- `/status`
+- `/plan`
+- `/tick`
+- `/new`
+- `/resume <session_id>`
+
 Recommended UI validation checks:
 
 ```bash

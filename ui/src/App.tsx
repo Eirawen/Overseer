@@ -2,16 +2,21 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   cancelRun,
+  createSession,
   fetchQueue,
   fetchRunLogs,
   fetchRuns,
+  fetchSession,
   getWsRoot,
+  sendMessage,
+  tickSession,
   resolveQueueRequest,
   type QueueRecord,
   type RunRecord,
+  type SessionChatResponse,
 } from './api';
 
-const DEFAULT_API_ROOT = 'http://127.0.0.1:8765';
+const DEFAULT_API_ROOT = String(import.meta.env.VITE_API_ROOT ?? 'http://127.0.0.1:8765');
 const VOICE_ENABLED_STORAGE_KEY = 'overseer.voice.enabled';
 
 type ChatMessage = {
@@ -97,6 +102,10 @@ function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
 
 export function App(): JSX.Element {
   const [apiRoot, setApiRoot] = useState<string>(DEFAULT_API_ROOT);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionMode, setSessionMode] = useState<string>('conversation');
+  const [overseerInstanceId, setOverseerInstanceId] = useState<string | null>(null);
+  const [sessionActiveRunCount, setSessionActiveRunCount] = useState<number>(0);
   const [chatInput, setChatInput] = useState<string>('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [runs, setRuns] = useState<RunRecord[]>([]);
@@ -126,6 +135,21 @@ export function App(): JSX.Element {
     [runs, selectedRunId],
   );
 
+  const applySessionPayload = (payload: SessionChatResponse): void => {
+    if (payload.session_id) {
+      setSessionId(payload.session_id);
+    }
+    if (payload.instance_id !== undefined) {
+      setOverseerInstanceId(payload.instance_id ?? null);
+    }
+    if (payload.mode) {
+      setSessionMode(payload.mode);
+    }
+    if (typeof payload.active_run_count === 'number') {
+      setSessionActiveRunCount(payload.active_run_count);
+    }
+  };
+
   const loadData = async (): Promise<void> => {
     const [runRecords, queueRecords] = await Promise.all([fetchRuns(apiRoot), fetchQueue(apiRoot)]);
     setRuns(runRecords);
@@ -153,6 +177,34 @@ export function App(): JSX.Element {
     return () => {
       stopped = true;
       window.clearInterval(timer);
+    };
+  }, [apiRoot]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSessionId(null);
+    setSessionMode('conversation');
+    setSessionActiveRunCount(0);
+    setOverseerInstanceId(null);
+    setChatMessages([]);
+    createSession(apiRoot)
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+        applySessionPayload(payload);
+        if (payload.assistant_text) {
+          setChatMessages([{ role: 'system', text: payload.assistant_text }]);
+        }
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+        setChatMessages([{ role: 'system', text: `Failed to start Overseer session: ${String(error)}` }]);
+      });
+    return () => {
+      cancelled = true;
     };
   }, [apiRoot]);
 
@@ -312,13 +364,83 @@ export function App(): JSX.Element {
     setOrbPulse(false);
   };
 
-  const handleSend = (): void => {
+  const handleSend = async (): Promise<void> => {
     const trimmed = chatInput.trim();
     if (!trimmed) {
       return;
     }
     setChatMessages((prev) => [...prev, { role: 'human', text: trimmed }]);
     setChatInput('');
+    try {
+      const payload = await sendMessage(apiRoot, trimmed, sessionId);
+      applySessionPayload(payload);
+      if (payload.assistant_text) {
+        setChatMessages((prev) => [...prev, { role: 'system', text: payload.assistant_text ?? '' }]);
+      }
+      await loadData();
+      const firstCreatedRunId = payload.created_run_ids?.[0] ?? payload.run_id;
+      if (firstCreatedRunId) {
+        setSelectedRunId(firstCreatedRunId);
+      }
+      if (trimmed.startsWith('/resume ') && payload.session_id) {
+        try {
+          const resumed = await fetchSession(apiRoot, payload.session_id);
+          applySessionPayload(resumed);
+          const turns = Array.isArray(resumed.conversation_turns) ? resumed.conversation_turns : [];
+          const hydrated = turns
+            .filter((turn) => (turn.role === 'user' || turn.role === 'assistant') && typeof turn.content === 'string')
+            .map((turn) => ({ role: turn.role === 'user' ? 'human' : 'system', text: turn.content ?? '' } as ChatMessage));
+          if (hydrated.length > 0) {
+            setChatMessages((prev) => {
+              const prefix = prev.slice(0, Math.max(0, prev.length - 2));
+              return [...prefix, ...hydrated];
+            });
+          }
+        } catch {
+          // keep chat usable even if session hydration fails
+        }
+      }
+    } catch (error: unknown) {
+      setChatMessages((prev) => [...prev, { role: 'system', text: `Failed to send message: ${String(error)}` }]);
+    }
+  };
+
+  const handleNewSession = async (): Promise<void> => {
+    try {
+      const payload = await createSession(apiRoot);
+      applySessionPayload(payload);
+      setChatMessages(payload.assistant_text ? [{ role: 'system', text: payload.assistant_text }] : []);
+    } catch (error: unknown) {
+      setChatMessages((prev) => [...prev, { role: 'system', text: `Failed to create session: ${String(error)}` }]);
+    }
+  };
+
+  const handleTick = async (): Promise<void> => {
+    if (!sessionId) {
+      setChatMessages((prev) => [...prev, { role: 'system', text: 'No active session. Create one first.' }]);
+      return;
+    }
+    try {
+      const payload = await tickSession(apiRoot, sessionId);
+      applySessionPayload(payload);
+      const assistantText = payload.assistant_text;
+      if (assistantText) {
+        setChatMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last && last.role === 'system' && last.text === assistantText) {
+            return prev;
+          }
+          return [...prev, { role: 'system', text: assistantText }];
+        });
+      }
+      await loadData();
+      const firstCreatedRunId = payload.created_run_ids?.[0] ?? payload.run_id;
+      if (firstCreatedRunId) {
+        setSelectedRunId(firstCreatedRunId);
+      }
+    } catch (error: unknown) {
+      setChatMessages((prev) => [...prev, { role: 'system', text: `Failed to tick Overseer: ${String(error)}` }]);
+    }
   };
 
   const handleResolve = async (): Promise<void> => {
@@ -378,6 +500,18 @@ export function App(): JSX.Element {
       <section className="pane-grid">
         <section className="pane left">
           <h2>Chat</h2>
+          <div className="chat-input-row">
+            <button type="button" onClick={() => { void handleNewSession(); }}>
+              New Session
+            </button>
+            <button type="button" onClick={() => { void handleTick(); }} disabled={!sessionId}>
+              Tick
+            </button>
+            <small>
+              {sessionId ? `Session ${sessionId}` : 'No session'} · mode={sessionMode} · active_runs={sessionActiveRunCount}
+              {overseerInstanceId ? ` · ${overseerInstanceId}` : ''}
+            </small>
+          </div>
           <div className="voice-controls" aria-live="polite">
             <button type="button" className="voice-toggle" onClick={handleToggleVoice}>
               {voiceEnabled ? 'Disable voice' : 'Enable voice'}
@@ -416,9 +550,9 @@ export function App(): JSX.Element {
             <input
               value={chatInput}
               onChange={(event) => setChatInput(event.target.value)}
-              placeholder="Type message (MVP local-only)"
+              placeholder="Talk to Overseer (try: hello, build X, /status, /plan, /tick)"
             />
-            <button type="button" onClick={handleSend}>
+            <button type="button" onClick={() => { void handleSend(); }}>
               Send
             </button>
           </div>
