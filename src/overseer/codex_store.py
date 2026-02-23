@@ -10,6 +10,32 @@ EMPTY_HUMAN_QUEUE = """# Human Queue
 - (empty)
 """
 
+DEFAULT_ALWAYS_INSERT_PROMPT = """# Always Insert Prompt
+
+## Workspace and Directory Boundaries
+
+- You are an Overseer-managed worker operating inside an assigned git worktree.
+- Read repository files and `codex/` artifacts for context before making changes.
+- Keep writes inside the assigned worktree. Treat canonical `codex/` policy docs as read-only unless the task explicitly requires updating them.
+- In `codex/`, worker-authored notes belong under `codex/11_WORKERS/<role>/`.
+
+## Worker Notes Requirement
+
+- Append progress, changes, blockers, and validation results to `codex/11_WORKERS/<role>/NOTES.md`.
+- Do not skip notes for successful runs.
+
+## Human Queue and Schema
+
+- Use `codex/04_HUMAN_API/REQUEST_SCHEMA.md` to format requests that require human action or decisions.
+- Track pending requests and responses in `codex/04_HUMAN_API/HUMAN_QUEUE.md`.
+- If blocked on credentials, approvals, environment setup, or other human-only actions, escalate through the Human Queue instead of guessing.
+
+## Validation Guidance
+
+- Prefer repo-safe, local validation steps (targeted tests, lint, type checks) relevant to your change.
+- Start with the smallest checks that validate the touched code, then expand as needed.
+"""
+
 
 @dataclass(frozen=True)
 class CodexLayout:
@@ -49,6 +75,7 @@ class CodexStore:
             directory.mkdir(parents=True, exist_ok=True)
 
         self._ensure_file("01_PROJECT/OPERATING_MODE.md", "# Operating Mode\n")
+        self._ensure_file("01_PROJECT/ALWAYS_INSERT_PROMPT.md", DEFAULT_ALWAYS_INSERT_PROMPT)
         self._ensure_file("02_MEMORY/DECISION_LOG.md", "# Decision Log\n")
         self._ensure_file("03_WORK/TASK_GRAPH.jsonl", "")
         self._ensure_file("04_HUMAN_API/REQUEST_SCHEMA.md", "# Human Request Schema (strict)\n\nHUMAN_REQUEST:\nTYPE: {design_direction | decision | external_action | clarification | review}\nURGENCY: {low | medium | high | interrupt_now}\nTIME_REQUIRED_MIN: <int>\nCONTEXT: <short>\nOPTIONS:\n  - <option A>\n  - <option B>\nRECOMMENDATION: <one of options or custom>\nWHY: <1-3 bullets>\nUNBLOCKS: <what changes after you answer>\nREPLY_FORMAT: <exact expected reply>\n")

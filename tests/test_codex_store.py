@@ -36,6 +36,7 @@ def test_init_structure_creates_dirs_and_files(tmp_path: Path) -> None:
     store = CodexStore(tmp_path)
     store.init_structure()
     assert (store.codex_root / "01_PROJECT" / "OPERATING_MODE.md").exists()
+    assert (store.codex_root / "01_PROJECT" / "ALWAYS_INSERT_PROMPT.md").exists()
     assert (store.codex_root / "03_WORK" / "TASK_GRAPH.jsonl").exists()
     assert (store.codex_root / "04_HUMAN_API" / "HUMAN_QUEUE.md").exists()
     assert (store.codex_root / "04_HUMAN_API" / "HUMAN_TASK_TYPES.json").exists()
@@ -61,6 +62,16 @@ def test_init_structure_does_not_overwrite_existing_canonical(tmp_path: Path) ->
     store = CodexStore(tmp_path)
     store.init_structure()
     assert (store.codex_root / "03_WORK" / "TASK_GRAPH.jsonl").read_text(encoding="utf-8") == "existing line\n"
+
+
+def test_init_structure_does_not_overwrite_existing_always_insert_prompt(tmp_path: Path) -> None:
+    (tmp_path / "codex").mkdir(parents=True)
+    (tmp_path / "codex" / "01_PROJECT").mkdir(parents=True)
+    target = tmp_path / "codex" / "01_PROJECT" / "ALWAYS_INSERT_PROMPT.md"
+    target.write_text("custom prompt\n", encoding="utf-8")
+    store = CodexStore(tmp_path)
+    store.init_structure()
+    assert target.read_text(encoding="utf-8") == "custom prompt\n"
 
 
 def test_assert_write_allowed_telemetry_always_allowed(tmp_path: Path) -> None:

@@ -83,3 +83,34 @@ def test_integrator_runs_delegates_to_backend(tmp_path: Path, monkeypatch: pytes
     monkeypatch.setattr("overseer.integrators.codex.shutil.which", lambda _name: "/usr/bin/codex")
     runs = integrator.runs()
     assert isinstance(runs, list)
+
+
+def test_integrator_uses_provided_run_id_and_instructions_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, human_api, backend = _setup(tmp_path / "repo")
+    integrator = CodexIntegrator(store.repo_root, human_api=human_api, backend=backend)
+    monkeypatch.setattr("overseer.integrators.codex.shutil.which", lambda _name: "/usr/bin/codex")
+    captured: dict[str, object] = {}
+
+    def fake_submit(request):
+        captured["run_id"] = request.run_id
+        captured["cwd"] = request.cwd
+        return request.run_id
+
+    monkeypatch.setattr(backend, "submit", fake_submit)
+
+    run_id = integrator.submit(
+        RunRequest(
+            task_id="task-1",
+            objective="ignored objective",
+            run_id="run-fixed123456",
+            instructions_payload="# packed prompt\n\nbody\n",
+            prompt_metadata={"k": "v"},
+        )
+    )
+
+    assert run_id == "run-fixed123456"
+    assert captured["run_id"] == "run-fixed123456"
+    instructions_path = store.codex_root / "10_OVERSEER" / "worktrees" / "run-fixed123456" / "INSTRUCTIONS.md"
+    assert instructions_path.read_text(encoding="utf-8") == "# packed prompt\n\nbody\n"
