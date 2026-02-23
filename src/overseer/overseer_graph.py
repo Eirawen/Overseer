@@ -20,6 +20,7 @@ from overseer.locks import file_lock
 from overseer.prompting import PromptPack, PromptPackBuilder, PromptPolicy
 from overseer.session_store import SessionStore
 from overseer.task_store import TaskStore
+from overseer.handoff.service import HandoffService
 
 Mode = Literal[
     "conversation",
@@ -74,10 +75,14 @@ class OverseerCoreGraph:
     integrator: CodexIntegrator
     llm: LLMAdapter
     session_store: SessionStore
+    handoff_service: HandoffService | None = None
+    instance_id: str | None = None
 
     def __post_init__(self) -> None:
         self._events_root = self.codex_store.codex_root / "08_TELEMETRY" / "sessions"
         self._events_root.mkdir(parents=True, exist_ok=True)
+        if self.handoff_service is not None and self.instance_id is None:
+            self.instance_id = self.handoff_service.instance_id
         self.graph = self._compile()
 
     @classmethod
@@ -89,6 +94,8 @@ class OverseerCoreGraph:
         backend: ExecutionBackend,
         integrator: CodexIntegrator,
         llm: LLMAdapter,
+        handoff_service: HandoffService | None = None,
+        instance_id: str | None = None,
     ) -> "OverseerCoreGraph":
         return cls(
             codex_store=codex_store,
@@ -98,10 +105,15 @@ class OverseerCoreGraph:
             integrator=integrator,
             llm=llm,
             session_store=SessionStore(codex_store),
+            handoff_service=handoff_service,
+            instance_id=instance_id,
         )
 
     def create_session(self) -> str:
-        return self.session_store.create_session()
+        session_id = self.session_store.create_session()
+        if self.handoff_service is not None:
+            self.handoff_service.ensure_lease(session_id, self.instance_id)
+        return session_id
 
     def list_sessions(self) -> list[str]:
         return self.session_store.list_sessions()
@@ -113,12 +125,14 @@ class OverseerCoreGraph:
         return state
 
     def submit_user_message(self, session_id: str, text: str) -> OverseerState:
+        self._assert_session_owner(session_id)
         state = self.load_state(session_id)
         state["command"] = "message"
         state["last_user_message"] = text
         return self.graph.invoke(state)
 
     def tick(self, session_id: str) -> OverseerState:
+        self._assert_session_owner(session_id)
         state = self.load_state(session_id)
         state["command"] = "tick"
         state["last_user_message"] = ""
@@ -372,7 +386,10 @@ class OverseerCoreGraph:
         return {**state, "plan": plan, "active_runs": active, "mode": mode, "pending_human_requests": pending_human}
 
     def persist_state(self, state: OverseerState) -> OverseerState:
-        self.session_store.save_session(state)
+        if self.handoff_service is not None and self.instance_id is not None:
+            self.session_store.save_session_as_owner(state, self.instance_id)
+        else:
+            self.session_store.save_session(state)
         self._emit_event(
             state["session_id"],
             "state_saved",
@@ -382,6 +399,24 @@ class OverseerCoreGraph:
                 "pending_human_requests": state.get("pending_human_requests", []),
             },
         )
+        if self.handoff_service is not None:
+            recommendation = self.handoff_service.recommend_handoff(state["session_id"])
+            if recommendation is not None:
+                self._emit_event(
+                    state["session_id"],
+                    "handoff_recommended",
+                    {
+                        "band": recommendation.band,
+                        "score": recommendation.assessment.score,
+                        "lease_epoch": recommendation.lease_epoch,
+                        "reason": recommendation.reason,
+                    },
+                )
+                current = state.get("latest_response", "State updated.")
+                state = {
+                    **state,
+                    "latest_response": f"{current} Handoff recommended ({recommendation.band}, score={recommendation.assessment.score:.2f}).",
+                }
         return state
 
     def emit_response(self, state: OverseerState) -> OverseerState:
@@ -410,6 +445,11 @@ class OverseerCoreGraph:
         if state.get("active_runs"):
             return "poll"
         return "emit"
+
+    def _assert_session_owner(self, session_id: str) -> None:
+        if self.handoff_service is None or self.instance_id is None:
+            return
+        self.handoff_service.assert_primary_owner(session_id, self.instance_id)
 
     def _new_run_id(self) -> str:
         return f"run-{uuid4().hex[:12]}"

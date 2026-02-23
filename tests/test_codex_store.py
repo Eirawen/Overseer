@@ -42,6 +42,7 @@ def test_init_structure_creates_dirs_and_files(tmp_path: Path) -> None:
     assert (store.codex_root / "04_HUMAN_API" / "HUMAN_TASK_TYPES.json").exists()
     assert (store.codex_root / "08_TELEMETRY" / "RUN_LOG.jsonl").exists()
     assert (store.codex_root / "05_AGENTS" / "TERMINATION.md").exists()
+    assert (store.codex_root / "10_OVERSEER" / "HANDOFF_POLICY.json").exists()
     assert (store.codex_root / "11_WORKERS" / "builder" / ".gitkeep").exists()
     content = (store.codex_root / "04_HUMAN_API" / "HUMAN_QUEUE.md").read_text(encoding="utf-8")
     assert content == EMPTY_HUMAN_QUEUE
@@ -72,6 +73,16 @@ def test_init_structure_does_not_overwrite_existing_always_insert_prompt(tmp_pat
     store = CodexStore(tmp_path)
     store.init_structure()
     assert target.read_text(encoding="utf-8") == "custom prompt\n"
+
+
+def test_init_structure_does_not_overwrite_existing_handoff_policy(tmp_path: Path) -> None:
+    (tmp_path / "codex").mkdir(parents=True)
+    (tmp_path / "codex" / "10_OVERSEER").mkdir(parents=True)
+    target = tmp_path / "codex" / "10_OVERSEER" / "HANDOFF_POLICY.json"
+    target.write_text('{"custom":true}\n', encoding="utf-8")
+    store = CodexStore(tmp_path)
+    store.init_structure()
+    assert target.read_text(encoding="utf-8") == '{"custom":true}\n'
 
 
 def test_assert_write_allowed_telemetry_always_allowed(tmp_path: Path) -> None:

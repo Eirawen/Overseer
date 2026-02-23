@@ -388,3 +388,63 @@ def test_session_list_command(tmp_path: Path) -> None:
     listed = run_cli(repo, "session", "list")
     assert listed.returncode == 0
     assert "sess-" in listed.stdout
+
+
+def test_session_handoff_prepare_observe_switch(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    init_git_repo(repo)
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"), "OVERSEER_EXECUTION_BACKEND": "local"}
+    subprocess.run(
+        [sys.executable, "-m", "overseer", "--repo-root", str(repo), "chat"],
+        cwd=Path(__file__).resolve().parents[1],
+        input="/exit\n",
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+        timeout=15,
+    )
+    session_id = run_cli(repo, "session", "list").stdout.strip().splitlines()[0]
+
+    owner1 = "ovr-owner1"
+    owner2 = "ovr-owner2"
+    prepared = run_cli(repo, "session", "handoff", "prepare", "--session", session_id, "--instance-id", owner1)
+    assert "handoff_id=" in prepared.stdout
+    handoff_id = [line for line in prepared.stdout.splitlines() if line.startswith("handoff_id=")][0].split("=", 1)[1]
+
+    observed = run_cli(
+        repo,
+        "session",
+        "handoff",
+        "observe",
+        "--session",
+        session_id,
+        "--handoff",
+        handoff_id,
+        "--instance-id",
+        owner2,
+    )
+    assert "read_only=true" in observed.stdout
+
+    switched = run_cli(
+        repo,
+        "session",
+        "handoff",
+        "switch",
+        "--session",
+        session_id,
+        "--handoff",
+        handoff_id,
+        "--to-instance",
+        owner2,
+        "--instance-id",
+        owner1,
+    )
+    assert "new_owner=ovr-owner2" in switched.stdout
+
+    status = run_cli(repo, "session", "handoff", "status", "--session", session_id, "--instance-id", owner2)
+    assert "owner=ovr-owner2" in status.stdout

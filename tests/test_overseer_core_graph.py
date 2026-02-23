@@ -6,8 +6,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from overseer.codex_store import CodexStore
 from overseer.execution.backend import ExecutionBackend, ExecutionRecord
+from overseer.handoff.service import HandoffService
 from overseer.human_api import HumanAPI
 from overseer.integrators.base import RunRequest, RunResult
 from overseer.llm import FakeLLM
@@ -340,3 +343,89 @@ def test_poll_uses_backend_status(tmp_path: Path) -> None:
     graph.submit_user_message(session_id, "build backend polling")
     graph.tick(session_id)
     assert backend.calls >= 1
+
+
+def test_handoff_owner_enforced_for_graph_mutations(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    _init_repo(repo)
+    store = CodexStore(repo)
+    store.init_structure()
+    task_store = TaskStore(store)
+    human_api = HumanAPI(store)
+    backend = DummyBackend()
+
+    owner_service = HandoffService(store, SessionStore(store), instance_id="ovr-owner")
+    owner_graph = OverseerCoreGraph.build(
+        codex_store=store,
+        task_store=task_store,
+        human_api=human_api,
+        backend=backend,
+        integrator=FakeIntegrator(),
+        llm=FakeLLM(responses={"build": "Plan it"}),
+        handoff_service=owner_service,
+        instance_id="ovr-owner",
+    )
+    session_id = owner_graph.create_session()
+
+    intruder_service = HandoffService(store, SessionStore(store), instance_id="ovr-intruder")
+    intruder_graph = OverseerCoreGraph.build(
+        codex_store=store,
+        task_store=task_store,
+        human_api=human_api,
+        backend=backend,
+        integrator=FakeIntegrator(),
+        llm=FakeLLM(responses={"build": "Plan it"}),
+        handoff_service=intruder_service,
+        instance_id="ovr-intruder",
+    )
+
+    with pytest.raises(PermissionError, match="session lease owned by ovr-owner"):
+        intruder_graph.tick(session_id)
+
+
+def test_graph_emits_handoff_recommendation_event_when_pressure_crosses_threshold(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    _init_repo(repo)
+    store = CodexStore(repo)
+    store.init_structure()
+    # Tiny budgets force recommendation on first message.
+    (store.codex_root / "10_OVERSEER" / "HANDOFF_POLICY.json").write_text(
+        json.dumps(
+            {
+                "protocol_version": 1,
+                "pressure": {
+                    "state_bytes_budget": 10,
+                    "conversation_turn_budget": 1,
+                    "conversation_bytes_budget": 10,
+                    "observe_threshold": 0.1,
+                    "switch_threshold": 0.9,
+                },
+                "checkpoint": {"tail_turns": 12, "max_latest_response_chars": 300, "max_plan_items": 20, "max_active_runs": 20},
+                "recommendation": {"emit_once_per_lease_epoch_per_band": True},
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    task_store = TaskStore(store)
+    human_api = HumanAPI(store)
+    handoff_service = HandoffService(store, SessionStore(store), instance_id="ovr-owner")
+    graph = OverseerCoreGraph.build(
+        codex_store=store,
+        task_store=task_store,
+        human_api=human_api,
+        backend=DummyBackend(),
+        integrator=FakeIntegrator(),
+        llm=FakeLLM(responses={"build": "Plan it"}),
+        handoff_service=handoff_service,
+        instance_id="ovr-owner",
+    )
+    session_id = graph.create_session()
+    graph.submit_user_message(session_id, "build x")
+
+    events_path = store.codex_root / "08_TELEMETRY" / "sessions" / session_id / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert any(event["type"] == "handoff_recommended" for event in events)

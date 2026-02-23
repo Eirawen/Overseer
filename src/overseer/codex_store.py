@@ -36,6 +36,27 @@ DEFAULT_ALWAYS_INSERT_PROMPT = """# Always Insert Prompt
 - Start with the smallest checks that validate the touched code, then expand as needed.
 """
 
+DEFAULT_HANDOFF_POLICY_JSON = """{
+  "protocol_version": 1,
+  "pressure": {
+    "state_bytes_budget": 96000,
+    "conversation_turn_budget": 120,
+    "conversation_bytes_budget": 64000,
+    "observe_threshold": 0.65,
+    "switch_threshold": 0.85
+  },
+  "checkpoint": {
+    "tail_turns": 12,
+    "max_latest_response_chars": 300,
+    "max_plan_items": 20,
+    "max_active_runs": 20
+  },
+  "recommendation": {
+    "emit_once_per_lease_epoch_per_band": true
+  }
+}
+"""
+
 
 @dataclass(frozen=True)
 class CodexLayout:
@@ -146,6 +167,7 @@ class CodexStore:
         self._ensure_file("08_TELEMETRY/RUN_LOG.jsonl", "")
 
         self._ensure_file("10_OVERSEER/.gitkeep", "")
+        self._ensure_file("10_OVERSEER/HANDOFF_POLICY.json", DEFAULT_HANDOFF_POLICY_JSON)
         self._ensure_file("11_WORKERS/builder/.gitkeep", "")
         self._ensure_file("11_WORKERS/reviewer/.gitkeep", "")
         self._ensure_file("11_WORKERS/verifier/.gitkeep", "")
