@@ -28,26 +28,33 @@ SCHEMA_TEXT = (
 )
 
 TASK_TYPES_TEXT = {
-    "types": [
+    "version": 2,
+    "defaults": {"fallback_task_type_id": "decision"},
+    "task_types": [
         {
             "id": "decision",
+            "category": "clarification",
             "description": "General tradeoff and approval decisions.",
             "default_type": "decision",
             "default_urgency": "high",
+            "who_can_do_it": ["human"],
             "required_fields": ["CONTEXT", "OPTIONS", "RECOMMENDATION"],
             "when_to_use": "Use for unresolved forks.",
             "examples": ["Approve a migration strategy"],
         },
         {
             "id": "game_asset_request",
+            "category": "external_action",
             "description": "Request a game asset from a human.",
             "default_type": "external_action",
             "default_urgency": "medium",
+            "who_can_do_it": ["human"],
             "required_fields": ["asset_name", "target_format"],
             "when_to_use": "Use when blocked on an externally created asset.",
             "examples": ["Need icon for pause menu"],
         },
-    ]
+    ],
+    "routing_rules": [],
 }
 
 
@@ -138,6 +145,138 @@ def test_append_request_uses_selected_task_type_defaults(tmp_path: Path) -> None
     assert request.urgency == "medium"
 
 
+def test_append_request_uses_routing_rule_category_and_type_metadata(tmp_path: Path) -> None:
+    _, api = _store_with_codex(tmp_path)
+    api.task_types_file.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "defaults": {"fallback_task_type_id": "decision"},
+                "task_types": [
+                    {
+                        "id": "decision",
+                        "category": "clarification",
+                        "description": "General tradeoff and approval decisions.",
+                        "default_type": "decision",
+                        "default_urgency": "high",
+                        "who_can_do_it": ["human"],
+                        "required_fields": ["CONTEXT", "OPTIONS", "RECOMMENDATION"],
+                        "when_to_use": "Use for unresolved forks.",
+                        "examples": ["Approve a migration strategy"],
+                    },
+                    {
+                        "id": "notes_review",
+                        "category": "review",
+                        "description": "Review missing notes failures.",
+                        "default_type": "review",
+                        "default_urgency": "medium",
+                        "who_can_do_it": ["human"],
+                        "required_fields": ["failure_reason", "expected_note_location", "remediation_choice"],
+                        "when_to_use": "Use for notes policy failures.",
+                        "examples": ["missing required notes"],
+                    },
+                ],
+                "routing_rules": [
+                    {
+                        "id": "missing-required-notes",
+                        "task_type_id": "notes_review",
+                        "match": {"reason_contains": ["missing required notes"], "objective_contains": []},
+                    }
+                ],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    api.ensure_queue()
+    request_text = api.append_request({"id": "task-1"}, "missing required notes", run_id="run-1")
+
+    assert "TASK_TYPE_ID: notes_review" in request_text
+    assert "TASK_CATEGORY: review" in request_text
+    assert "TYPE: review" in request_text
+    assert "URGENCY: medium" in request_text
+    assert "TASK_TYPE_SELECTION_SOURCE: routing_rule:missing-required-notes" in request_text
+
+
+def test_append_request_runtime_invalid_config_falls_back_with_warning(tmp_path: Path) -> None:
+    _, api = _store_with_codex(tmp_path)
+    api.task_types_file.write_text('{"version":2,"task_types":[]}\n', encoding="utf-8")
+    api.ensure_queue()
+
+    request_text = api.append_request({"id": "task-bad-config"}, "blocked")
+
+    assert "TASK_TYPE_ID: decision" in request_text
+    assert "TASK_TYPE_SELECTION_SOURCE: builtin_fallback" in request_text
+    assert "TASK_TYPE_CONFIG_WARNING:" in request_text
+    assert "TYPE: decision" in request_text
+
+
+def test_append_request_runtime_missing_config_falls_back_with_warning(tmp_path: Path) -> None:
+    _, api = _store_with_codex(tmp_path)
+    api.task_types_file.unlink()
+    api.ensure_queue()
+
+    request_text = api.append_request({"id": "task-missing-config"}, "blocked")
+
+    assert "TASK_TYPE_ID: decision" in request_text
+    assert "TASK_TYPE_SELECTION_SOURCE: builtin_fallback" in request_text
+    assert "TASK_TYPE_CONFIG_WARNING:" in request_text
+    assert "missing human task types config" in request_text
+
+
+def test_append_request_agent_only_selected_type_falls_back_to_human(tmp_path: Path) -> None:
+    _, api = _store_with_codex(tmp_path)
+    api.task_types_file.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "defaults": {"fallback_task_type_id": "decision"},
+                "task_types": [
+                    {
+                        "id": "decision",
+                        "category": "clarification",
+                        "description": "General tradeoff and approval decisions.",
+                        "default_type": "decision",
+                        "default_urgency": "high",
+                        "who_can_do_it": ["human"],
+                        "required_fields": ["CONTEXT", "OPTIONS", "RECOMMENDATION"],
+                        "when_to_use": "Use for unresolved forks.",
+                        "examples": ["Approve a migration strategy"],
+                    },
+                    {
+                        "id": "agent_triage",
+                        "category": "review",
+                        "description": "Internal agent triage only.",
+                        "default_type": "review",
+                        "default_urgency": "low",
+                        "who_can_do_it": ["agent"],
+                        "required_fields": ["triage_note"],
+                        "when_to_use": "Use for agent-only triage.",
+                        "examples": ["agent-only"],
+                    },
+                ],
+                "routing_rules": [
+                    {
+                        "id": "route-agent-only",
+                        "task_type_id": "agent_triage",
+                        "match": {"reason_contains": ["agent-only"], "objective_contains": []},
+                    }
+                ],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    api.ensure_queue()
+
+    request_text = api.append_request({"id": "task-agent-fallback"}, "agent-only routing trigger")
+
+    assert "TASK_TYPE_ID: decision" in request_text
+    assert "TASK_TYPE_SELECTION_SOURCE: fallback" in request_text
+    assert "TASK_TYPE_CONFIG_WARNING:" in request_text
+    assert "WHO_CAN_DO_IT: human" in request_text
+
+
 def test_parse_request_fails_with_useful_error(tmp_path: Path) -> None:
     _, api = _store_with_codex(tmp_path)
     api.ensure_queue()
@@ -205,6 +344,102 @@ def test_task_types_validation_catches_friendly_errors(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="default_urgency"):
+        api.validate_task_types()
+
+
+def test_task_types_validation_supports_legacy_v1_types_shape(tmp_path: Path) -> None:
+    _, api = _store_with_codex(tmp_path)
+    api.task_types_file.write_text(
+        json.dumps(
+            {
+                "types": [
+                    {
+                        "id": "decision",
+                        "description": "ok",
+                        "default_type": "decision",
+                        "default_urgency": "high",
+                        "required_fields": ["x"],
+                        "when_to_use": "when",
+                        "examples": ["e1"],
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    task_types = api.validate_task_types()
+    assert len(task_types) == 1
+    assert task_types[0].id == "decision"
+    assert task_types[0].category == "decision"
+    assert task_types[0].who_can_do_it == ["human"]
+
+
+def test_task_types_validation_rejects_unknown_routing_task_type(tmp_path: Path) -> None:
+    _, api = _store_with_codex(tmp_path)
+    api.task_types_file.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "defaults": {"fallback_task_type_id": "decision"},
+                "task_types": TASK_TYPES_TEXT["task_types"],
+                "routing_rules": [
+                    {
+                        "id": "bad-route",
+                        "task_type_id": "does_not_exist",
+                        "match": {"reason_contains": ["x"], "objective_contains": []},
+                    }
+                ],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="routing_rules\\[0\\]\\.task_type_id: unknown task type"):
+        api.validate_task_types()
+
+
+def test_task_types_validation_rejects_non_human_fallback_task_type(tmp_path: Path) -> None:
+    _, api = _store_with_codex(tmp_path)
+    api.task_types_file.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "defaults": {"fallback_task_type_id": "agent_triage"},
+                "task_types": [
+                    *TASK_TYPES_TEXT["task_types"],
+                    {
+                        "id": "agent_triage",
+                        "category": "review",
+                        "description": "Agent-only triage.",
+                        "default_type": "review",
+                        "default_urgency": "low",
+                        "who_can_do_it": ["agent"],
+                        "required_fields": ["triage_note"],
+                        "when_to_use": "Use internally.",
+                        "examples": ["agent-only"],
+                    },
+                ],
+                "routing_rules": [],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="fallback_task_type_id 'agent_triage'.*usable by a human"):
+        api.validate_task_types()
+
+
+def test_task_types_validation_rejects_wrong_v2_version(tmp_path: Path) -> None:
+    _, api = _store_with_codex(tmp_path)
+    bad = dict(TASK_TYPES_TEXT)
+    bad["version"] = 3
+    api.task_types_file.write_text(json.dumps(bad, indent=2), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="v2 config must set 'version' to 2"):
         api.validate_task_types()
 
 

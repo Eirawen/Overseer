@@ -1,31 +1,59 @@
 {
-  "types": [
+  "version": 2,
+  "defaults": {
+    "fallback_task_type_id": "decision"
+  },
+  "task_types": [
     {
       "id": "decision",
+      "category": "clarification",
       "description": "General tradeoff and approval decisions.",
       "default_type": "decision",
       "default_urgency": "high",
+      "who_can_do_it": ["human"],
       "required_fields": ["CONTEXT", "OPTIONS", "RECOMMENDATION", "UNBLOCKS", "REPLY_FORMAT"],
       "when_to_use": "Use when the agent reaches a true fork and needs a human choice to proceed.",
       "examples": ["Pick between architecture A vs B", "Approve rollout strategy"]
     },
     {
-      "id": "game_asset_request",
-      "description": "Requests for externally provided game or media assets.",
+      "id": "credentials_or_setup",
+      "category": "credentials",
+      "description": "Requests for installation, credentials, or local environment setup that only a human can complete.",
       "default_type": "external_action",
       "default_urgency": "medium",
-      "required_fields": ["asset_name", "target_format", "style_constraints", "deadline"],
-      "when_to_use": "Use when the task is blocked on a human creating/procuring an asset.",
-      "examples": ["Need icon set for inventory UI", "Need voice line recording for tutorial"]
+      "who_can_do_it": ["human"],
+      "required_fields": ["missing_dependency_or_credential", "install_or_access_steps", "owner", "reply_confirmation"],
+      "when_to_use": "Use when Overseer is blocked by missing tools, access, or credentials.",
+      "examples": ["Codex CLI missing from PATH", "Need API key provisioned"]
     },
     {
-      "id": "cli_direction",
-      "description": "Repo policy and behavior decisions for CLI or backend tooling.",
-      "default_type": "design_direction",
-      "default_urgency": "high",
-      "required_fields": ["target_command", "expected_behavior", "compat_constraints"],
-      "when_to_use": "Use when command semantics are ambiguous and product intent is required.",
-      "examples": ["Should command default to dry-run?", "How should flags interact?"]
+      "id": "notes_review",
+      "category": "review",
+      "description": "Human review request for process/policy failures such as missing required notes.",
+      "default_type": "review",
+      "default_urgency": "medium",
+      "who_can_do_it": ["human"],
+      "required_fields": ["failure_reason", "expected_note_location", "remediation_choice"],
+      "when_to_use": "Use when a run fails policy enforcement and needs human guidance or remediation.",
+      "examples": ["Missing required builder notes", "Confirm whether to rerun after notes fix"]
+    }
+  ],
+  "routing_rules": [
+    {
+      "id": "missing-codex-cli",
+      "task_type_id": "credentials_or_setup",
+      "match": {
+        "reason_contains": ["codex cli unavailable", "Install steps:"],
+        "objective_contains": []
+      }
+    },
+    {
+      "id": "missing-required-notes",
+      "task_type_id": "notes_review",
+      "match": {
+        "reason_contains": ["missing required notes"],
+        "objective_contains": []
+      }
     }
   ]
 }

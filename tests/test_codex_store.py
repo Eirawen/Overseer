@@ -38,11 +38,20 @@ def test_init_structure_creates_dirs_and_files(tmp_path: Path) -> None:
     assert (store.codex_root / "01_PROJECT" / "OPERATING_MODE.md").exists()
     assert (store.codex_root / "03_WORK" / "TASK_GRAPH.jsonl").exists()
     assert (store.codex_root / "04_HUMAN_API" / "HUMAN_QUEUE.md").exists()
+    assert (store.codex_root / "04_HUMAN_API" / "HUMAN_TASK_TYPES.json").exists()
     assert (store.codex_root / "08_TELEMETRY" / "RUN_LOG.jsonl").exists()
     assert (store.codex_root / "05_AGENTS" / "TERMINATION.md").exists()
     assert (store.codex_root / "11_WORKERS" / "builder" / ".gitkeep").exists()
     content = (store.codex_root / "04_HUMAN_API" / "HUMAN_QUEUE.md").read_text(encoding="utf-8")
     assert content == EMPTY_HUMAN_QUEUE
+    task_types_text = (store.codex_root / "04_HUMAN_API" / "HUMAN_TASK_TYPES.json").read_text(
+        encoding="utf-8"
+    )
+    assert '"task_types"' in task_types_text
+    assert '"routing_rules"' in task_types_text
+    assert '"defaults"' in task_types_text
+    assert '"category"' in task_types_text
+    assert '"who_can_do_it"' in task_types_text
 
 
 def test_init_structure_does_not_overwrite_existing_canonical(tmp_path: Path) -> None:
