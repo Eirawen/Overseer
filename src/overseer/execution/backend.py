@@ -277,7 +277,7 @@ class LocalBackend:
             return record
         self._append_event(run_id, "cancel_requested", {"requested_at": datetime.now(timezone.utc).isoformat()})
         self.run_store.update_status(run_id, "canceling")
-        if record.worker_pid is not None:
+        if record.worker_pid is not None and record.worker_pid != os.getpid():
             try:
                 os.kill(record.worker_pid, signal.SIGTERM)
             except OSError:
@@ -354,7 +354,16 @@ class LocalBackend:
 
         refreshed = self._to_record(self.run_store.get_run(run_id))
         if refreshed.status == "canceling":
-            return self.cancel(run_id).exit_code or 1
+            refreshed.ended_at = datetime.now(timezone.utc).isoformat()
+            refreshed.exit_code = result_exit_code
+            refreshed.status = "canceled"
+            self._append_event(
+                run_id,
+                "canceled",
+                {"ended_at": refreshed.ended_at, "exit_code": refreshed.exit_code},
+            )
+            self._persist_record(refreshed, status="canceled")
+            return refreshed.exit_code or 1
         if refreshed.status not in TERMINAL_STATUSES:
             refreshed.ended_at = datetime.now(timezone.utc).isoformat()
             refreshed.exit_code = result_exit_code

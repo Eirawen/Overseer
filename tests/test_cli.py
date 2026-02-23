@@ -374,7 +374,7 @@ def test_session_list_command(tmp_path: Path) -> None:
     run_cli(repo, "init")
 
     env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"), "OVERSEER_EXECUTION_BACKEND": "local"}
-    subprocess.run(
+    chat_proc = subprocess.run(
         [sys.executable, "-m", "overseer", "--repo-root", str(repo), "chat"],
         cwd=Path(__file__).resolve().parents[1],
         input="/exit\n",
@@ -398,7 +398,7 @@ def test_session_handoff_prepare_observe_switch(tmp_path: Path) -> None:
     run_cli(repo, "init")
 
     env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"), "OVERSEER_EXECUTION_BACKEND": "local"}
-    subprocess.run(
+    chat_proc = subprocess.run(
         [sys.executable, "-m", "overseer", "--repo-root", str(repo), "chat"],
         cwd=Path(__file__).resolve().parents[1],
         input="/exit\n",
@@ -408,9 +408,12 @@ def test_session_handoff_prepare_observe_switch(tmp_path: Path) -> None:
         env=env,
         timeout=15,
     )
+    assert chat_proc.returncode == 0
+    owner1_lines = [line for line in chat_proc.stdout.splitlines() if line.startswith("Instance=")]
+    assert owner1_lines, chat_proc.stdout
+    owner1 = owner1_lines[0].split("=", 1)[1].strip()
     session_id = run_cli(repo, "session", "list").stdout.strip().splitlines()[0]
 
-    owner1 = "ovr-owner1"
     owner2 = "ovr-owner2"
     prepared = run_cli(repo, "session", "handoff", "prepare", "--session", session_id, "--instance-id", owner1)
     assert "handoff_id=" in prepared.stdout

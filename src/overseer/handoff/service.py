@@ -95,17 +95,20 @@ class HandoffService:
         assessment = self.assess_pressure(session_id)
         if assessment.band == "normal":
             return None
-        if assessment.band == "observe_recommended" and lease.active_handoff_id:
-            return None
+        recommended_band = assessment.band
         if assessment.band == "switch_recommended":
+            # If switch preconditions are not met yet, we still want to recommend
+            # preparing/observing a handoff instead of suppressing the signal.
             if not lease.active_handoff_id or not lease.observer_instance_ids:
-                return None
-        if not self._claim_recommendation_marker(session_id, lease.lease_epoch, assessment.band):
+                recommended_band = "observe_recommended"
+        if recommended_band == "observe_recommended" and lease.active_handoff_id:
+            return None
+        if not self._claim_recommendation_marker(session_id, lease.lease_epoch, recommended_band):
             return None
         return HandoffRecommendation(
             session_id=session_id,
             lease_epoch=lease.lease_epoch,
-            band=assessment.band,
+            band=recommended_band,
             assessment=assessment,
             reason=", ".join(assessment.trigger_reasons),
         )

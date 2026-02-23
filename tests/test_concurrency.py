@@ -71,10 +71,9 @@ def test_meta_json_never_partially_written_under_concurrent_reads(tmp_path: Path
 
     def writer() -> None:
         for i in range(80):
-            with file_lock(lock_path):
-                r = backend._read_record(meta_path)
-                r.started_at = f"2020-01-01T00:00:{i:02d}Z"
-                backend._write_record(meta_path, r)
+            r = backend._read_record(meta_path)
+            r.started_at = f"2020-01-01T00:00:{i:02d}Z"
+            backend._write_record(meta_path, r)
         done.set()
 
     def reader() -> None:

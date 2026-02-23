@@ -1,6 +1,10 @@
 langgraph<0.3,>=0.2.57
 langchain<0.4,>=0.3.19
 langchain-core<0.4,>=0.3.35
+fastapi<1,>=0.115
+uvicorn<1,>=0.30
+celery<6,>=5.4
+redis<6,>=5
 
 [dev]
 pytest<9.1,>=8.3.0
