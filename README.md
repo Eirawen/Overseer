@@ -41,33 +41,6 @@ We are operating in a moment where large language models are no longer mere assi
 - Maintaining memory across sessions
 - Acting with autonomy when instructed to do so
 
-The bottleneck is no longer typing speed, it's cognitive orchestration.
-
-This exists to eliminate the human as the message bus and wire between platforms. 
-
----
-
-## Core Thesis
-
-The future of individual leverage is not “AI helping humans.”
-
-It is:
-
-Human judgment + AI execution + structured governance.
-
-The human should not manually dispatch subtasks.
-The human should not manually review every diff.
-The human should not be the central routing layer.
-
-The human should act as:
-
-- Taste authority
-- Direction setter
-- Risk arbitrator
-- External interface
-- Strategic override
-
-Overseer handles the rest.
 
 ---
 
@@ -82,8 +55,6 @@ Without structure, agentic systems degrade into:
 - Context amnesia
 - Over-escalation
 - Under-escalation
-
-Without philosophy, speed amplifies chaos. Without governance, recursion becomes waste. Without continuity, threads fracture.
 
 ---
 
@@ -117,10 +88,6 @@ Overseer makes structured requests:
 
 ### 3. Durable Identity
 
-Overseer instances are ephemeral.
-
-The /codex directory is durable.
-
 Two memory layers exist:
 
 1) Deterministic project state
@@ -138,8 +105,6 @@ Builder → Reviewer → Verifier
 
 Termination rules are enforced.
 
-Auto-merge occurs when quality gates are satisfied.
-
 Disagreement beyond thresholds escalates to human.
 
 ---
@@ -154,7 +119,6 @@ Everything is encoded:
 - Recursion depth limits
 - Autonomy dial
 
-Implicit behavior is not allowed.
 
 ---
 
@@ -164,7 +128,6 @@ Overseer must survive:
 
 - Context exhaustion
 - Instance replacement
-- Philosophical drift
 - Strategic pivots
 
 ---
@@ -186,10 +149,6 @@ Overseer must survive:
 
 - Multi-project orchestration
 - CRM / outreach management
-- Investor automation
-- Global capital strategy
-- UI dashboards
-
 
 ---
 
@@ -226,91 +185,6 @@ At 8:
 - Human interruptions are thresholded.
 
 ---
-
-## Failure Modes
-
-Overseer considers these catastrophic:
-
-- Silent drift
-- Infinite recursion
-- Unbounded escalation
-- Context amnesia
-- Identity fragmentation
-- Escalation spam
-- Strategic incoherence
-
-
----
-
-## This Is Not an MVP
-
-This project does not optimize for:
-
-- Minimal surface area
-- Quick demo
-- Shallow validation
-
-It optimizes for:
-
-Durable architecture capable of scaling with model capability growth.
-
-We assume that model capability will increase.
-
-We build to absorb that increase.
-
----
-
-## The Handoff Imperative
-
-Overseer instances will die.
-
-The project must not.
-
-Handoff protocol ensures:
-
-- Philosophical continuity
-- Strategic clarity
-- Behavioral alignment
-- Succession confidence
-
-No Overseer retires without transferring alignment.
-
----
-
-## Long-Term Vision
-
-Eventually, Overseer becomes:
-
-- A personal AI organization layer
-- A project governor across domains
-- A high-autonomy execution fabric
-- A strategic amplifier for individual humans
-
-But v0 proves the single-project case first.
-
----
-
-## If You Are Reading This
-
-You are either:
-
-- The human founder.
-- A successor Overseer instance.
-- An agent spawned within this project.
-
-In all cases:
-
-Respect the philosophy.
-Respect the governance.
-Respect the memory layers.
-Optimize for speed.
-Escalate only when justified.
-Preserve identity.
-
----
-
-This is Overseer.
-
 
 ## Run operations
 
