@@ -26,11 +26,8 @@ npm --prefix ui run test
 npm --prefix ui run build
 ```
 
-## The Premise
 
-
-We are operating in a moment where large language models are no longer mere assistants. They are capable of:
-
+LLM's aren't just helpful, harmless assistants anymore. They are capable of:
 - Designing systems
 - Writing production code
 - Reviewing code
@@ -44,7 +41,7 @@ We are operating in a moment where large language models are no longer mere assi
 
 ---
 
-## The Problem
+## Problem
 
 Without structure, agentic systems degrade into:
 
@@ -58,7 +55,9 @@ Without structure, agentic systems degrade into:
 
 ---
 
-## The Design Principles
+So let's experiment with giving them even *more* control. 
+
+## Design Principles
 
 ### 1. Speed Over Control
 
