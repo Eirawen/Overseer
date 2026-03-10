@@ -70,6 +70,8 @@ class ExecutionBackend(Protocol):
 
 
 class LocalBackend:
+    backend_kind = "local"
+
     def __init__(
         self,
         codex_root: Path,
@@ -433,6 +435,8 @@ class LocalBackend:
 
 
 class CeleryBackend(LocalBackend):
+    backend_kind = "celery"
+
     def __init__(
         self,
         codex_root: Path,

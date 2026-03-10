@@ -81,19 +81,34 @@ def test_health_endpoint(tmp_path: Path) -> None:
     try:
         response = client.get("/health")
         assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
+        payload = response.json()
+        assert payload["deployment"] == "self-hosted"
+        assert payload["recommended_backend"] == "local"
+        assert payload["components"]["backend"]["kind"] == "local"
+        assert payload["components"]["codex"]["status"] in {"ok", "degraded"}
     finally:
         daemon.stop()
 
 
 def test_health_endpoint_includes_cors_for_local_ui_origin(tmp_path: Path) -> None:
     class _DummyDaemon:
-        pass
+        def health_payload(self) -> dict[str, object]:
+            return {"status": "ok"}
 
     with TestClient(create_app(_DummyDaemon())) as client:
         response = client.get("/health", headers={"Origin": "http://127.0.0.1:5173"})
         assert response.status_code == 200
         assert response.headers.get("access-control-allow-origin") == "http://127.0.0.1:5173"
+
+
+def test_health_endpoint_marks_missing_llm_runtime_as_unknown(tmp_path: Path) -> None:
+    daemon, client, _, _ = _setup_daemon(tmp_path)
+    try:
+        payload = client.get("/health").json()
+        assert payload["components"]["llm"]["mode"] == "unconfigured"
+        assert payload["status"] == "degraded"
+    finally:
+        daemon.stop()
 
 
 def test_message_endpoint_validates_and_dispatches(tmp_path: Path) -> None:

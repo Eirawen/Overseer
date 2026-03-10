@@ -1,5 +1,7 @@
 # Overseer
 
+Overseer is an open-source, self-hosted orchestration layer for running Codex-style work against your own repositories and your own infrastructure. The intended operator model is a single trusted user on a local machine or private box, not a hosted multi-tenant control plane.
+
 ## Setup
 
 
@@ -34,6 +36,13 @@ npm --prefix ui run typecheck
 npm --prefix ui run test
 npm --prefix ui run build
 ```
+
+## What It Is
+
+- Self-hosted and local-first
+- Centered on your own `codex/` project state, worktrees, and telemetry
+- Optimized for a trusted operator workflow, not an internet-facing SaaS product
+- Able to use a simple local backend by default, with optional Celery/Redis for heavier self-hosted setups
 
 ## The Premise
 

@@ -11,11 +11,21 @@ from overseer.git_worktree import GitRepoError, resolve_git_root
 from overseer.human_api import HumanAPI
 from overseer.integrators import CodexIntegrator, RunRequest
 from overseer.handoff import HandoffService
-from overseer.llm import FakeLLM
+from overseer.llm import FakeLLM, LLMAdapter
 from overseer.overseer_graph import OverseerCoreGraph
 from overseer.session_store import SessionStore
 from overseer.task_store import TaskStore
 
+def _runtime_llm() -> LLMAdapter:
+    # Keep runtime behavior explicit until a real model adapter is wired in.
+    return FakeLLM(
+        default_response="Stubbed planner response. Overseer can manage sessions and runs, but autonomous chat planning is not backed by a real model yet."
+    )
+
+
+def _runtime_status_line(backend) -> str:
+    backend_kind = getattr(backend, "backend_kind", backend.__class__.__name__.replace("Backend", "").lower())
+    return f"backend={backend_kind} llm=stubbed"
 
 
 def _services(repo_root: Path | None = None):
@@ -185,7 +195,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         human_api=human_api,
         backend=backend,
         integrator=integrator,
-        llm=FakeLLM(default_response="Acknowledged. I can keep chatting while runs execute."),
+        llm=_runtime_llm(),
         handoff_service=handoff_service,
         instance_id=handoff_service.instance_id,
     )
@@ -199,6 +209,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         overseer_graph=graph,
         handoff_service=handoff_service,
     )
+    print(f"Overseer self-hosted daemon starting ({_runtime_status_line(backend)})")
     serve_daemon(daemon, host=args.host, port=args.port)
     return 0
 
@@ -301,13 +312,14 @@ def cmd_chat(args: argparse.Namespace) -> int:
         human_api=human_api,
         backend=backend,
         integrator=integrator,
-        llm=FakeLLM(default_response="Acknowledged. I can keep chatting while runs execute."),
+        llm=_runtime_llm(),
         handoff_service=handoff_service,
         instance_id=handoff_service.instance_id,
     )
     session_id = graph.create_session()
     print(f"Overseer chat started. Session={session_id}")
     print(f"Instance={handoff_service.instance_id}")
+    print(f"Runtime: {_runtime_status_line(backend)}")
     print("Commands: /new, /resume <id>, /status, /plan, /tick, /handoff <status|assess|prepare|observe|switch>, /exit")
     while True:
         try:
@@ -405,7 +417,7 @@ def cmd_session_list(args: argparse.Namespace) -> int:
         human_api=human_api,
         backend=backend,
         integrator=integrator,
-        llm=FakeLLM(),
+        llm=_runtime_llm(),
     )
     for session_id in graph.list_sessions():
         print(session_id)

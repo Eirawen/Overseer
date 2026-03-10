@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import threading
 import time
 from dataclasses import asdict
@@ -81,6 +82,55 @@ class OverseerDaemon:
         snapshot = {record.run_id: asdict(record) for record in runs}
         with self._lock:
             self._runs = snapshot
+
+    def health_payload(self) -> dict[str, Any]:
+        backend_kind = getattr(self.backend, "backend_kind", self.backend.__class__.__name__.replace("Backend", "").lower())
+        codex_command = getattr(self.integrator, "command", ["codex", "run"])
+        codex_bin = codex_command[0] if codex_command else "codex"
+        codex_available = shutil.which(codex_bin) is not None
+        codex_root = getattr(self.backend, "codex_root", None)
+        codex_root_path = Path(codex_root) if codex_root is not None else None
+        codex_writable = bool(codex_root_path and codex_root_path.exists() and os.access(codex_root_path, os.W_OK))
+
+        llm_component: dict[str, Any] = {"mode": "unconfigured", "status": "unknown"}
+        if self.overseer_graph is not None:
+            llm_name = self.overseer_graph.llm.__class__.__name__
+            llm_component = {
+                "adapter": llm_name,
+                "mode": "stubbed" if llm_name == "FakeLLM" else "configured",
+                "status": "degraded" if llm_name == "FakeLLM" else "ok",
+            }
+
+        backend_component: dict[str, Any] = {"kind": backend_kind, "status": "ok"}
+        if backend_kind == "celery":
+            redis_url = os.environ.get("REDIS_URL", "").strip()
+            backend_component["redis_url_configured"] = bool(redis_url)
+            backend_component["status"] = "ok" if redis_url else "degraded"
+            if not redis_url:
+                backend_component["detail"] = "REDIS_URL not set; celery mode is not ready for self-hosted use."
+
+        components = {
+            "backend": backend_component,
+            "codex": {
+                "command": codex_bin,
+                "available": codex_available,
+                "status": "ok" if codex_available else "degraded",
+            },
+            "codex_root": {
+                "path": str(codex_root_path) if codex_root_path is not None else None,
+                "writable": codex_writable,
+                "status": "ok" if codex_writable else "degraded",
+            },
+            "llm": llm_component,
+        }
+        statuses = {component["status"] for component in components.values()}
+        return {
+            "status": "ok" if statuses == {"ok"} else "degraded",
+            "deployment": "self-hosted",
+            "operator_model": "single-operator",
+            "recommended_backend": "local",
+            "components": components,
+        }
 
     def runs(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -424,7 +474,9 @@ def create_app(daemon: OverseerDaemon) -> Any:
     )
 
     @app.get("/health")
-    def health() -> dict[str, str]:
+    def health() -> dict[str, Any]:
+        if hasattr(daemon, "health_payload"):
+            return daemon.health_payload()
         return {"status": "ok"}
 
     @app.get("/runs")

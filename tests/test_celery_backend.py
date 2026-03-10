@@ -90,17 +90,17 @@ def test_celery_backend_cancel_revokes_dispatched_task(tmp_path: Path) -> None:
     assert fake_app.control.revoked == [("task-abc", True)]
 
 
-def test_build_backend_defaults_to_celery(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    pytest.importorskip("celery")
+def test_build_backend_defaults_to_local(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("OVERSEER_EXECUTION_BACKEND", raising=False)
     backend = build_backend(tmp_path / "codex")
-    assert isinstance(backend, CeleryBackend)
-
-
-def test_build_backend_allows_local_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("OVERSEER_EXECUTION_BACKEND", "local")
-    backend = build_backend(tmp_path / "codex")
     assert isinstance(backend, LocalBackend)
+
+
+def test_build_backend_allows_celery_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    pytest.importorskip("celery")
+    monkeypatch.setenv("OVERSEER_EXECUTION_BACKEND", "celery")
+    backend = build_backend(tmp_path / "codex")
+    assert isinstance(backend, CeleryBackend)
 
 
 @pytest.mark.integration

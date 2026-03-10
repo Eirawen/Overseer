@@ -1,5 +1,7 @@
 # Configuring Overseer on first launch
 
+Overseer is designed as a self-hosted Codex orchestrator for a single trusted operator. The recommended deployment is local-first: run the API on localhost, keep `codex/` on local disk, and use the `local` execution backend unless you explicitly need a separate worker queue.
+
 ## Prerequisites
 
 1. Run Overseer from inside a git repository.
@@ -21,6 +23,12 @@ overseer --repo-root . run-status --run <run_id>
 
 # Start persistent chat server (local only)
 overseer --repo-root . serve --host 127.0.0.1 --port 8765
+```
+
+Check runtime readiness before relying on the web UI:
+
+```bash
+curl http://127.0.0.1:8765/health
 ```
 
 ## Local UI MVP scaffold
@@ -71,9 +79,23 @@ Each run writes logs to:
 
 If Codex CLI is missing, Overseer appends a HumanAPI request in `codex/04_HUMAN_API/HUMAN_QUEUE.md` with install/configuration guidance.
 
-## Execution backend (Celery default)
+## Execution backend (Local default)
 
-Overseer now defaults to Celery-backed execution.
+Overseer now defaults to the local subprocess backend. This is the recommended mode for self-hosted use because it requires no Redis worker stack and keeps all state on local disk.
+
+- Default behavior:
+
+```bash
+unset OVERSEER_EXECUTION_BACKEND
+```
+
+- Explicit local mode:
+
+```bash
+export OVERSEER_EXECUTION_BACKEND=local
+```
+
+- Optional Celery mode for heavier self-hosted installs:
 
 - Set `REDIS_URL` to point at your broker/backend (example: `redis://127.0.0.1:6379/0`).
 - Run a Celery worker in a separate terminal:
@@ -82,11 +104,21 @@ Overseer now defaults to Celery-backed execution.
 celery -A overseer.execution.celery_app:celery_app worker --loglevel=INFO
 ```
 
-- To force local subprocess mode for debugging, set:
+- If you opt into Celery, set:
 
 ```bash
-export OVERSEER_EXECUTION_BACKEND=local
+export OVERSEER_EXECUTION_BACKEND=celery
 ```
+
+`/health` will report Celery mode as degraded when `REDIS_URL` is missing.
+
+## Chat planning runtime
+
+The session UI and chat loop are live, but the planning/conversation model is still a stubbed local adapter in the current runtime. That means:
+
+- session persistence, run orchestration, `/status`, `/plan`, `/tick`, and queue handling are real
+- autonomous chat reasoning is not yet backed by a real model provider
+- `/health` reports this component as `stubbed` so self-hosted operators can see the limitation immediately
 
 ## Codex CLI prompts and escalations
 
