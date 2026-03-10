@@ -111,6 +111,32 @@ def test_health_endpoint_marks_missing_llm_runtime_as_unknown(tmp_path: Path) ->
         daemon.stop()
 
 
+def test_health_endpoint_uses_graph_llm_health_payload() -> None:
+    class _DummyBackend:
+        def list_runs(self):
+            return []
+
+        runs_root = Path("/tmp/nonexistent")
+
+    class _DummyLlm:
+        def health(self) -> dict[str, object]:
+            return {"adapter": "CodexLLM", "mode": "missing_credentials", "status": "degraded"}
+
+    class _DummyGraph:
+        llm = _DummyLlm()
+
+    daemon = OverseerDaemon(
+        backend=_DummyBackend(),  # type: ignore[arg-type]
+        integrator=object(),  # type: ignore[arg-type]
+        human_api=object(),  # type: ignore[arg-type]
+        overseer_graph=_DummyGraph(),  # type: ignore[arg-type]
+    )
+    with TestClient(create_app(daemon)) as client:
+        payload = client.get("/health").json()
+        assert payload["components"]["llm"]["adapter"] == "CodexLLM"
+        assert payload["components"]["llm"]["mode"] == "missing_credentials"
+
+
 def test_message_endpoint_validates_and_dispatches(tmp_path: Path) -> None:
     calls: list[tuple[str, str | None]] = []
 

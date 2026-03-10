@@ -11,21 +11,26 @@ from overseer.git_worktree import GitRepoError, resolve_git_root
 from overseer.human_api import HumanAPI
 from overseer.integrators import CodexIntegrator, RunRequest
 from overseer.handoff import HandoffService
-from overseer.llm import FakeLLM, LLMAdapter
+from overseer.llm import (
+    CODEX_PROVIDER_ID,
+    JsonOAuthCredentialStore,
+    OAuthRefreshCoordinator,
+    build_runtime_llm,
+    import_codex_cli_credential,
+)
+from overseer.llm.codex import CodexOAuthAdapter
 from overseer.overseer_graph import OverseerCoreGraph
 from overseer.session_store import SessionStore
 from overseer.task_store import TaskStore
 
-def _runtime_llm() -> LLMAdapter:
-    # Keep runtime behavior explicit until a real model adapter is wired in.
-    return FakeLLM(
-        default_response="Stubbed planner response. Overseer can manage sessions and runs, but autonomous chat planning is not backed by a real model yet."
-    )
+def _runtime_llm(codex_store: CodexStore):
+    return build_runtime_llm(codex_store)
 
 
-def _runtime_status_line(backend) -> str:
+def _runtime_status_line(backend, llm) -> str:
     backend_kind = getattr(backend, "backend_kind", backend.__class__.__name__.replace("Backend", "").lower())
-    return f"backend={backend_kind} llm=stubbed"
+    llm_health = llm.health() if hasattr(llm, "health") else {"mode": llm.__class__.__name__}
+    return f"backend={backend_kind} llm={llm_health.get('mode', llm.__class__.__name__)}"
 
 
 def _services(repo_root: Path | None = None):
@@ -189,13 +194,14 @@ def cmd_serve(args: argparse.Namespace) -> int:
     codex_store.init_structure()
     integrator = _build_integrator(codex_store.repo_root)
     handoff_service = HandoffService(codex_store, SessionStore(codex_store))
+    llm = _runtime_llm(codex_store)
     graph = OverseerCoreGraph.build(
         codex_store=codex_store,
         task_store=task_store,
         human_api=human_api,
         backend=backend,
         integrator=integrator,
-        llm=_runtime_llm(),
+        llm=llm,
         handoff_service=handoff_service,
         instance_id=handoff_service.instance_id,
     )
@@ -209,7 +215,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         overseer_graph=graph,
         handoff_service=handoff_service,
     )
-    print(f"Overseer self-hosted daemon starting ({_runtime_status_line(backend)})")
+    print(f"Overseer self-hosted daemon starting ({_runtime_status_line(backend, llm)})")
     serve_daemon(daemon, host=args.host, port=args.port)
     return 0
 
@@ -306,20 +312,21 @@ def cmd_chat(args: argparse.Namespace) -> int:
     codex_store.init_structure()
     integrator = _build_integrator(codex_store.repo_root)
     handoff_service = HandoffService(codex_store, SessionStore(codex_store))
+    llm = _runtime_llm(codex_store)
     graph = OverseerCoreGraph.build(
         codex_store=codex_store,
         task_store=task_store,
         human_api=human_api,
         backend=backend,
         integrator=integrator,
-        llm=_runtime_llm(),
+        llm=llm,
         handoff_service=handoff_service,
         instance_id=handoff_service.instance_id,
     )
     session_id = graph.create_session()
     print(f"Overseer chat started. Session={session_id}")
     print(f"Instance={handoff_service.instance_id}")
-    print(f"Runtime: {_runtime_status_line(backend)}")
+    print(f"Runtime: {_runtime_status_line(backend, llm)}")
     print("Commands: /new, /resume <id>, /status, /plan, /tick, /handoff <status|assess|prepare|observe|switch>, /exit")
     while True:
         try:
@@ -417,10 +424,67 @@ def cmd_session_list(args: argparse.Namespace) -> int:
         human_api=human_api,
         backend=backend,
         integrator=integrator,
-        llm=_runtime_llm(),
+        llm=_runtime_llm(codex_store),
     )
     for session_id in graph.list_sessions():
         print(session_id)
+    return 0
+
+
+def _auth_store(codex_store: CodexStore) -> JsonOAuthCredentialStore:
+    root = codex_store.codex_root / "10_OVERSEER" / "auth"
+    codex_store.assert_write_allowed("overseer", root)
+    return JsonOAuthCredentialStore(root)
+
+
+def _refresh_coordinator(codex_store: CodexStore) -> OAuthRefreshCoordinator:
+    return OAuthRefreshCoordinator(codex_store.codex_root / "10_OVERSEER" / "locks")
+
+
+def cmd_auth_import_codex_cli(args: argparse.Namespace) -> int:
+    codex_store, _, _, _ = _services(Path(args.repo_root))
+    codex_store.init_structure()
+    credential = import_codex_cli_credential()
+    _auth_store(codex_store).put(CODEX_PROVIDER_ID, credential, args.profile)
+    print(f"imported provider={CODEX_PROVIDER_ID} profile={args.profile}")
+    return 0
+
+
+def cmd_auth_status(args: argparse.Namespace) -> int:
+    codex_store, _, _, _ = _services(Path(args.repo_root))
+    codex_store.init_structure()
+    store = _auth_store(codex_store)
+    records = store.list(args.provider)
+    if not records:
+        print("No stored OAuth credentials.")
+        return 0
+    for provider_id, profile_id, credential in records:
+        print(
+            f"provider={provider_id} profile={profile_id} expires_at={credential.expires_at} "
+            f"email={credential.email or '-'} account_id={credential.account_id or '-'}"
+        )
+    return 0
+
+
+def cmd_auth_logout(args: argparse.Namespace) -> int:
+    codex_store, _, _, _ = _services(Path(args.repo_root))
+    codex_store.init_structure()
+    deleted = _auth_store(codex_store).delete(args.provider, args.profile)
+    if not deleted:
+        raise RuntimeError(f"No stored credential for {args.provider}:{args.profile}")
+    print(f"deleted provider={args.provider} profile={args.profile}")
+    return 0
+
+
+def cmd_auth_login(args: argparse.Namespace) -> int:
+    codex_store, _, _, _ = _services(Path(args.repo_root))
+    codex_store.init_structure()
+    if args.provider != CODEX_PROVIDER_ID:
+        raise RuntimeError(f"Unsupported provider: {args.provider}")
+    adapter = CodexOAuthAdapter()
+    credential = adapter.login(is_headless=args.headless)
+    _auth_store(codex_store).put(args.provider, credential, args.profile)
+    print(f"stored provider={args.provider} profile={args.profile} expires_at={credential.expires_at}")
     return 0
 
 
@@ -518,6 +582,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     chat_parser = subparsers.add_parser("chat")
     chat_parser.set_defaults(func=cmd_chat)
+
+    auth_parser = subparsers.add_parser("auth")
+    auth_subparsers = auth_parser.add_subparsers(dest="auth_command", required=True)
+
+    auth_login_parser = auth_subparsers.add_parser("login")
+    auth_login_parser.add_argument("--provider", default=CODEX_PROVIDER_ID)
+    auth_login_parser.add_argument("--profile", default="default")
+    auth_login_parser.add_argument("--headless", action="store_true")
+    auth_login_parser.set_defaults(func=cmd_auth_login)
+
+    auth_status_parser = auth_subparsers.add_parser("status")
+    auth_status_parser.add_argument("--provider")
+    auth_status_parser.set_defaults(func=cmd_auth_status)
+
+    auth_logout_parser = auth_subparsers.add_parser("logout")
+    auth_logout_parser.add_argument("--provider", default=CODEX_PROVIDER_ID)
+    auth_logout_parser.add_argument("--profile", default="default")
+    auth_logout_parser.set_defaults(func=cmd_auth_logout)
+
+    auth_import_parser = auth_subparsers.add_parser("import-codex-cli")
+    auth_import_parser.add_argument("--profile", default="default")
+    auth_import_parser.set_defaults(func=cmd_auth_import_codex_cli)
 
     session_parser = subparsers.add_parser("session")
     session_subparsers = session_parser.add_subparsers(dest="session_command", required=True)

@@ -1,5 +1,5 @@
 # Overseer — ROADMAP
-(Last updated: 2026-02-17)
+(Last updated: 2026-03-10)
 
 This roadmap is intentionally verbose. The point is to prevent “uh oh, I forgot where we were” and to make it easy to spawn agents against clearly-bounded chunks.
 
@@ -31,11 +31,14 @@ These are “as believed true” from the Integrator-02/03 reports and your note
 - [x] Runtime Codex CLI detection and escalation when missing (with doc link)
 - [x] First-launch environment docs (`docs/CONFIGURING_OVERSEER.md`)
 - [x] Test suite expanded substantially (you mentioned ~72 tests)
+- [x] Chat/planning runtime now uses ChatGPT Codex OAuth instead of the old stubbed local adapter
+- [x] Live `/message` flow now reaches Codex-backed planning, persists session state, and can spawn real builder runs
 
 ### Known friction / known risks
 - [ ] Workers not consistently writing progress notes under `codex/11_WORKERS/<role>/...` (this *will* bite us)
 - [ ] “Sometimes Codex asks for permissions / updates” — need preflight + UX handling, not brittle assumptions
 - [ ] Concurrency and multi-run-per-task semantics require explicit guarantees + tests (you already did some QA here; we should codify it)
+- [ ] Codex-generated plan text is currently conversational only; execution still uses the graph's hardcoded two-step `plan` array instead of promoting the model-authored plan to authoritative execution state
 
 ---
 
@@ -141,6 +144,9 @@ Goal: chat loop exists, doesn’t block, and can spawn runs + report status.
 - [ ] Tests:
   - [ ] Conversation append + reload
   - [ ] Run reference stored + can be displayed
+- [ ] Next TODO:
+  - [ ] Make the Codex-authored planning output authoritative by parsing/storing the model-produced plan into `state["plan"]` before spawning execution runs
+  - [ ] Keep the assistant text and execution plan in sync so `/plan`, chat output, and spawned work all reflect the same plan
 
 #### M1.2 Non-blocking run spawning from chat
 - [x] Chat command surface (initial):

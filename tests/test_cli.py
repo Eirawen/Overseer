@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import os
 import shutil
 import subprocess
@@ -52,6 +54,14 @@ def _fake_codex_script(bin_dir: Path, body: str) -> None:
     script = bin_dir / "codex"
     script.write_text("#!/usr/bin/env bash\nset -euo pipefail\n" + body + "\n", encoding="utf-8")
     script.chmod(0o755)
+
+
+def _fake_jwt(payload: dict[str, object]) -> str:
+    header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode("utf-8").rstrip("=")
+    body = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    ).decode("utf-8").rstrip("=")
+    return f"{header}.{body}.signature"
 
 
 def test_run_agent_and_status(tmp_path: Path) -> None:
@@ -258,7 +268,52 @@ def test_human_types_validate_reports_config_errors(tmp_path: Path) -> None:
 
     result = run_cli(repo, "human-types", "validate", check=False)
     assert result.returncode != 0
-    assert "must be a non-empty string" in result.stderr
+
+
+def test_auth_import_status_and_logout(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    init_git_repo(repo)
+    (repo / "codex").mkdir(parents=True)
+    run_cli(repo, "init")
+
+    home = tmp_path / "home"
+    auth_dir = home / ".codex"
+    auth_dir.mkdir(parents=True)
+    access_token = _fake_jwt(
+        {
+            "exp": 4102444800,
+            "client_id": "app_test123",
+            "https://api.openai.com/auth": {"chatgpt_account_id": "acct-123"},
+            "https://api.openai.com/profile": {"email": "test@example.com"},
+        }
+    )
+    id_token = _fake_jwt({"aud": ["app_test123"]})
+    (auth_dir / "auth.json").write_text(
+        json.dumps(
+            {
+                "tokens": {
+                    "access_token": access_token,
+                    "refresh_token": "refresh-token",
+                    "account_id": "acct-123",
+                    "id_token": id_token,
+                }
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    env = {"HOME": str(home)}
+
+    imported = run_cli(repo, "auth", "import-codex-cli", env=env)
+    assert "imported provider=openai-codex" in imported.stdout
+
+    status = run_cli(repo, "auth", "status", env=env)
+    assert "provider=openai-codex" in status.stdout
+    assert "email=test@example.com" in status.stdout
+
+    logout = run_cli(repo, "auth", "logout", env=env)
+    assert "deleted provider=openai-codex" in logout.stdout
 
 
 

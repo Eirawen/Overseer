@@ -94,12 +94,16 @@ class OverseerDaemon:
 
         llm_component: dict[str, Any] = {"mode": "unconfigured", "status": "unknown"}
         if self.overseer_graph is not None:
-            llm_name = self.overseer_graph.llm.__class__.__name__
-            llm_component = {
-                "adapter": llm_name,
-                "mode": "stubbed" if llm_name == "FakeLLM" else "configured",
-                "status": "degraded" if llm_name == "FakeLLM" else "ok",
-            }
+            llm = self.overseer_graph.llm
+            if hasattr(llm, "health"):
+                llm_component = llm.health()
+            else:
+                llm_name = llm.__class__.__name__
+                llm_component = {
+                    "adapter": llm_name,
+                    "mode": "stubbed" if llm_name == "FakeLLM" else "configured",
+                    "status": "degraded" if llm_name == "FakeLLM" else "ok",
+                }
 
         backend_component: dict[str, Any] = {"kind": backend_kind, "status": "ok"}
         if backend_kind == "celery":

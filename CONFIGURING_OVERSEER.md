@@ -54,3 +54,12 @@ TASK_ID=$(python -m overseer --repo-root . add-task "Implement feature X")
 python -m overseer --repo-root . integrate --task "$TASK_ID"
 python -m overseer --repo-root . brief
 ```
+
+## Chat planning runtime
+
+The session UI and chat loop use ChatGPT Codex OAuth for planning/conversation work.
+
+- planning/chat credentials are stored under `codex/10_OVERSEER/auth/`
+- import an existing Codex CLI login with `overseer auth import-codex-cli`
+- or perform a new login with `overseer auth login --provider openai-codex`
+- current limitation: Codex-generated plan text appears in chat, but execution still follows Overseer's internal fallback two-step plan

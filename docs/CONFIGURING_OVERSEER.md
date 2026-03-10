@@ -114,11 +114,13 @@ export OVERSEER_EXECUTION_BACKEND=celery
 
 ## Chat planning runtime
 
-The session UI and chat loop are live, but the planning/conversation model is still a stubbed local adapter in the current runtime. That means:
+The session UI and chat loop use ChatGPT Codex OAuth for planning/conversation work.
 
-- session persistence, run orchestration, `/status`, `/plan`, `/tick`, and queue handling are real
-- autonomous chat reasoning is not yet backed by a real model provider
-- `/health` reports this component as `stubbed` so self-hosted operators can see the limitation immediately
+- session persistence, run orchestration, `/status`, `/plan`, `/tick`, and queue handling remain the same
+- planning/chat credentials are stored under `codex/10_OVERSEER/auth/`
+- import an existing Codex CLI login with `overseer auth import-codex-cli`, or perform a new login with `overseer auth login --provider openai-codex`
+- `/health` reports whether the LLM runtime is configured, reusable from existing Codex CLI credentials, or missing credentials
+- current limitation: the Codex-authored plan is shown in conversation output, but Overseer still executes its internal fallback two-step plan instead of treating the model-authored plan as authoritative
 
 ## Codex CLI prompts and escalations
 

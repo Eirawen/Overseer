@@ -29,6 +29,9 @@ One-command local dev stack (starts Overseer API + Vite UI, local backend by def
 The web chat now talks to `OverseerCoreGraph` sessions (not just run submission), so you can use normal prompts
 and chat commands like `/status`, `/plan`, `/tick`, `/new`, and `/resume <session_id>`.
 
+The planning/chat runtime is now backed by ChatGPT Codex OAuth rather than the old stubbed adapter.
+Current limitation: the model's plan text is returned in chat, but execution still follows Overseer's internal two-step plan until plan-to-execution integration is completed.
+
 UI quality gates (TypeScript + frontend tests):
 
 ```bash
