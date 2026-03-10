@@ -1,0 +1,19 @@
+{
+  "protocol_version": 1,
+  "pressure": {
+    "state_bytes_budget": 96000,
+    "conversation_turn_budget": 120,
+    "conversation_bytes_budget": 64000,
+    "observe_threshold": 0.65,
+    "switch_threshold": 0.85
+  },
+  "checkpoint": {
+    "tail_turns": 12,
+    "max_latest_response_chars": 300,
+    "max_plan_items": 20,
+    "max_active_runs": 20
+  },
+  "recommendation": {
+    "emit_once_per_lease_epoch_per_band": true
+  }
+}

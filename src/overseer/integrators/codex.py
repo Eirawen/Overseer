@@ -47,10 +47,11 @@ class CodexIntegrator:
             )
             raise RuntimeError("codex CLI not installed or not on PATH")
 
-        run_id = f"run-{uuid4().hex[:12]}"
+        run_id = request.run_id or f"run-{uuid4().hex[:12]}"
         worktree = self.worktrees.create_for_run(task_id=request.task_id, run_id=run_id)
         instructions = worktree.path / "INSTRUCTIONS.md"
-        instructions.write_text(request.objective + "\n", encoding="utf-8")
+        instructions_text = request.instructions_payload if request.instructions_payload is not None else request.objective
+        instructions.write_text(instructions_text.rstrip("\n") + "\n", encoding="utf-8")
 
         run_root = self.codex_root / "08_TELEMETRY" / "runs" / run_id
         execution_request = ExecutionRequest(
@@ -89,4 +90,3 @@ class CodexIntegrator:
             status=record.status,
             exit_code=record.exit_code,
         )
-

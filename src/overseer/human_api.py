@@ -13,6 +13,7 @@ from overseer.locks import file_lock
 _REQUEST_ID_PATTERN = re.compile(r"^hr-[0-9a-f]{12}$")
 _SCHEMA_ENUM_PATTERN = re.compile(r"^(TYPE|URGENCY):\s*\{([^}]+)\}\s*$", flags=re.MULTILINE)
 _ALLOWED_STATUSES = {"pending", "resolved"}
+_ALLOWED_WHO_CAN_DO_IT = {"human", "agent"}
 _REQUIRED_SCHEMA_KEYS = {
     "HUMAN_REQUEST:",
     "TYPE:",
@@ -57,12 +58,30 @@ class HumanRequestSchema:
 @dataclass(frozen=True)
 class HumanTaskType:
     id: str
+    category: str
     description: str
     default_type: str
     default_urgency: str
+    who_can_do_it: list[str]
     required_fields: list[str]
     when_to_use: str
     examples: list[str]
+
+
+@dataclass(frozen=True)
+class HumanTaskRoutingRule:
+    id: str
+    task_type_id: str
+    reason_contains: list[str]
+    objective_contains: list[str]
+
+
+@dataclass(frozen=True)
+class HumanTaskTypeCatalog:
+    task_types: list[HumanTaskType]
+    routing_rules: list[HumanTaskRoutingRule]
+    fallback_task_type_id: str
+    warnings: list[str]
 
 
 class HumanAPI:
@@ -103,10 +122,48 @@ class HumanAPI:
 
         return HumanRequestSchema(allowed_types=allowed_types, allowed_urgencies=allowed_urgencies)
 
-    def validate_task_types(self) -> list[HumanTaskType]:
+    def _builtin_fallback_catalog(self, warning: str | None = None) -> HumanTaskTypeCatalog:
+        warnings = [warning] if warning else []
+        return HumanTaskTypeCatalog(
+            task_types=[
+                HumanTaskType(
+                    id=_DEFAULT_TASK_TYPE_ID,
+                    category="clarification",
+                    description="General tradeoff and approval decisions.",
+                    default_type="decision",
+                    default_urgency="high",
+                    who_can_do_it=["human"],
+                    required_fields=[
+                        "CONTEXT",
+                        "OPTIONS",
+                        "RECOMMENDATION",
+                        "UNBLOCKS",
+                        "REPLY_FORMAT",
+                    ],
+                    when_to_use="Use when the agent reaches a true fork and needs a human choice to proceed.",
+                    examples=["Pick between architecture A vs B", "Approve rollout strategy"],
+                )
+            ],
+            routing_rules=[],
+            fallback_task_type_id=_DEFAULT_TASK_TYPE_ID,
+            warnings=warnings,
+        )
+
+    def _load_task_type_catalog(self, strict: bool = True) -> HumanTaskTypeCatalog:
+        if not strict:
+            try:
+                return self._load_task_type_catalog(strict=True)
+            except ValueError as exc:
+                return self._builtin_fallback_catalog(
+                    f"{self.task_types_file.name} invalid; using built-in fallback. {exc}"
+                )
+
         schema = self._load_schema()
         if not self.task_types_file.exists():
-            raise ValueError(f"missing human task types config: {self.task_types_file}")
+            raise ValueError(
+                f"missing human task types config: {self.task_types_file} "
+                f"(run `overseer init` to create {self.task_types_file.name})"
+            )
 
         try:
             raw = json.loads(self.task_types_file.read_text(encoding="utf-8"))
@@ -115,17 +172,28 @@ class HumanAPI:
 
         if not isinstance(raw, dict):
             raise ValueError(f"{self.task_types_file.name}: root must be an object")
-        raw_types = raw.get("types")
+        is_v2 = "task_types" in raw
+        if "version" in raw:
+            version = raw.get("version")
+            if not isinstance(version, int):
+                raise ValueError(f"{self.task_types_file.name}: 'version' must be an integer")
+            if is_v2 and version != 2:
+                raise ValueError(
+                    f"{self.task_types_file.name}: v2 config must set 'version' to 2 (got {version})"
+                )
+        raw_types = raw.get("task_types") if is_v2 else raw.get("types")
         if not isinstance(raw_types, list) or not raw_types:
-            raise ValueError(f"{self.task_types_file.name}: 'types' must be a non-empty array")
+            expected_key = "task_types" if is_v2 else "types"
+            raise ValueError(f"{self.task_types_file.name}: '{expected_key}' must be a non-empty array")
 
         allowed_type_values = schema.allowed_types
         allowed_urgency_values = schema.allowed_urgencies
         seen_ids: set[str] = set()
         validated: list[HumanTaskType] = []
 
+        type_loc_prefix = "task_types" if is_v2 else "types"
         for idx, entry in enumerate(raw_types):
-            loc = f"types[{idx}]"
+            loc = f"{type_loc_prefix}[{idx}]"
             if not isinstance(entry, dict):
                 raise ValueError(f"{loc}: each item must be an object")
 
@@ -139,6 +207,13 @@ class HumanAPI:
             if task_type_id in seen_ids:
                 raise ValueError(f"{loc}.id: duplicate id '{task_type_id}'")
             seen_ids.add(task_type_id)
+
+            category_raw = entry.get("category")
+            if category_raw is None and not is_v2:
+                category = str(entry.get("default_type") or "clarification").strip()
+                category = category or "clarification"
+            else:
+                category = _required_text("category")
 
             default_type = _required_text("default_type")
             if default_type not in allowed_type_values:
@@ -168,36 +243,213 @@ class HumanAPI:
             ):
                 raise ValueError(f"{loc}.examples: must be an array of non-empty strings")
 
+            who_can_do_it = entry.get("who_can_do_it", ["human"] if not is_v2 else None)
+            if (
+                not isinstance(who_can_do_it, list)
+                or not who_can_do_it
+                or any(not isinstance(item, str) or not item.strip() for item in who_can_do_it)
+            ):
+                raise ValueError(f"{loc}.who_can_do_it: must be a non-empty array of non-empty strings")
+            normalized_who = [item.strip() for item in who_can_do_it]
+            invalid_who = [item for item in normalized_who if item not in _ALLOWED_WHO_CAN_DO_IT]
+            if invalid_who:
+                raise ValueError(
+                    f"{loc}.who_can_do_it: invalid value(s) {sorted(set(invalid_who))}, "
+                    f"expected only {sorted(_ALLOWED_WHO_CAN_DO_IT)}"
+                )
+
             validated.append(
                 HumanTaskType(
                     id=task_type_id,
+                    category=category,
                     description=_required_text("description"),
                     default_type=default_type,
                     default_urgency=default_urgency,
+                    who_can_do_it=normalized_who,
                     required_fields=[field.strip() for field in required_fields],
                     when_to_use=_required_text("when_to_use"),
                     examples=[example.strip() for example in examples],
                 )
             )
 
+        defaults = raw.get("defaults", {})
+        if defaults is None:
+            defaults = {}
+        if not isinstance(defaults, dict):
+            raise ValueError(f"{self.task_types_file.name}: 'defaults' must be an object")
+        fallback_task_type_id = defaults.get("fallback_task_type_id", _DEFAULT_TASK_TYPE_ID)
+        if not isinstance(fallback_task_type_id, str) or not fallback_task_type_id.strip():
+            raise ValueError(
+                f"{self.task_types_file.name}: defaults.fallback_task_type_id must be a non-empty string"
+            )
+        fallback_task_type_id = fallback_task_type_id.strip()
+
         if _DEFAULT_TASK_TYPE_ID not in seen_ids:
             raise ValueError(
                 f"{self.task_types_file.name}: must include a '{_DEFAULT_TASK_TYPE_ID}' task type"
             )
-        return validated
+        types_by_id = {entry.id: entry for entry in validated}
+        if fallback_task_type_id not in types_by_id:
+            raise ValueError(
+                f"{self.task_types_file.name}: defaults.fallback_task_type_id '{fallback_task_type_id}' "
+                "must reference an existing task type"
+            )
+        if "human" not in types_by_id[fallback_task_type_id].who_can_do_it:
+            raise ValueError(
+                f"{self.task_types_file.name}: defaults.fallback_task_type_id '{fallback_task_type_id}' "
+                "must reference a task type usable by a human"
+            )
+
+        raw_rules = raw.get("routing_rules", [])
+        if raw_rules is None:
+            raw_rules = []
+        if not isinstance(raw_rules, list):
+            raise ValueError(f"{self.task_types_file.name}: 'routing_rules' must be an array")
+        routing_rules: list[HumanTaskRoutingRule] = []
+        seen_rule_ids: set[str] = set()
+        for idx, entry in enumerate(raw_rules):
+            loc = f"routing_rules[{idx}]"
+            if not isinstance(entry, dict):
+                raise ValueError(f"{loc}: each item must be an object")
+
+            rule_id = entry.get("id")
+            if not isinstance(rule_id, str) or not rule_id.strip():
+                raise ValueError(f"{loc}.id: must be a non-empty string")
+            rule_id = rule_id.strip()
+            if rule_id in seen_rule_ids:
+                raise ValueError(f"{loc}.id: duplicate id '{rule_id}'")
+            seen_rule_ids.add(rule_id)
+
+            task_type_id = entry.get("task_type_id")
+            if not isinstance(task_type_id, str) or not task_type_id.strip():
+                raise ValueError(f"{loc}.task_type_id: must be a non-empty string")
+            task_type_id = task_type_id.strip()
+            if task_type_id not in types_by_id:
+                raise ValueError(f"{loc}.task_type_id: unknown task type '{task_type_id}'")
+
+            match = entry.get("match")
+            if not isinstance(match, dict):
+                raise ValueError(f"{loc}.match: must be an object")
+
+            def _match_list(key: str) -> list[str]:
+                raw_list = match.get(key, [])
+                if raw_list is None:
+                    return []
+                if not isinstance(raw_list, list) or any(
+                    not isinstance(item, str) or not item.strip() for item in raw_list
+                ):
+                    raise ValueError(f"{loc}.match.{key}: must be an array of non-empty strings")
+                return [item.strip() for item in raw_list]
+
+            reason_contains = _match_list("reason_contains")
+            objective_contains = _match_list("objective_contains")
+            if not reason_contains and not objective_contains:
+                raise ValueError(
+                    f"{loc}.match: must define at least one non-empty matcher list "
+                    "(reason_contains or objective_contains)"
+                )
+
+            routing_rules.append(
+                HumanTaskRoutingRule(
+                    id=rule_id,
+                    task_type_id=task_type_id,
+                    reason_contains=reason_contains,
+                    objective_contains=objective_contains,
+                )
+            )
+
+        return HumanTaskTypeCatalog(
+            task_types=validated,
+            routing_rules=routing_rules,
+            fallback_task_type_id=fallback_task_type_id,
+            warnings=[],
+        )
+
+    def validate_task_types(self) -> list[HumanTaskType]:
+        return self._load_task_type_catalog(strict=True).task_types
 
     def list_task_types(self) -> list[HumanTaskType]:
         return sorted(self.validate_task_types(), key=lambda item: item.id)
 
-    def _resolve_task_type(self, task_type_id: str | None) -> HumanTaskType:
-        selected_id = (task_type_id or "").strip() or _DEFAULT_TASK_TYPE_ID
-        types = {entry.id: entry for entry in self.validate_task_types()}
+    def _match_routing_rule(
+        self, rule: HumanTaskRoutingRule, *, reason: str, objective: str
+    ) -> bool:
+        reason_l = reason.lower()
+        objective_l = objective.lower()
+        if rule.reason_contains and not any(token.lower() in reason_l for token in rule.reason_contains):
+            return False
+        if rule.objective_contains and not any(
+            token.lower() in objective_l for token in rule.objective_contains
+        ):
+            return False
+        return True
+
+    def _resolve_task_type_for_request(
+        self,
+        task: dict,
+        reason: str,
+        task_type_id: str | None,
+    ) -> tuple[HumanTaskType, str, str | None]:
+        catalog = self._load_task_type_catalog(strict=False)
+        types = {entry.id: entry for entry in catalog.task_types}
+        objective = str(task.get("objective", "") or "")
+        warning = "; ".join(catalog.warnings) if catalog.warnings else None
+        catalog_is_builtin_fallback = bool(catalog.warnings)
+
+        selected_id: str | None = None
+        selection_source = "fallback"
+        explicit_id = (task_type_id or "").strip()
+        task_field_id = str(task.get("human_task_type", "") or "").strip()
+
+        if explicit_id:
+            selected_id = explicit_id
+            selection_source = "explicit"
+        elif task_field_id:
+            selected_id = task_field_id
+            selection_source = "task_field"
+        else:
+            for rule in catalog.routing_rules:
+                if self._match_routing_rule(rule, reason=reason, objective=objective):
+                    selected_id = rule.task_type_id
+                    selection_source = f"routing_rule:{rule.id}"
+                    break
+            if not selected_id:
+                selected_id = catalog.fallback_task_type_id
+                selection_source = "builtin_fallback" if catalog_is_builtin_fallback else "fallback"
+
         selected = types.get(selected_id)
         if selected is None:
-            raise ValueError(
-                f"unknown human task type '{selected_id}'. Available: {', '.join(sorted(types))}"
+            if selection_source in {"explicit", "task_field"}:
+                raise ValueError(
+                    f"unknown human task type '{selected_id}'. Available: {', '.join(sorted(types))}"
+                )
+            warning = (
+                (warning + "; ") if warning else ""
+            ) + f"Selected task type '{selected_id}' was not found; using built-in fallback."
+            builtin = self._builtin_fallback_catalog()
+            return builtin.task_types[0], "builtin_fallback", warning
+
+        if "human" not in selected.who_can_do_it:
+            fallback = types.get(catalog.fallback_task_type_id)
+            if fallback is None or "human" not in fallback.who_can_do_it:
+                builtin = self._builtin_fallback_catalog()
+                warning = (
+                    (warning + "; ") if warning else ""
+                ) + (
+                    f"Selected task type '{selected.id}' is not human-capable; "
+                    "using built-in fallback."
+                )
+                return builtin.task_types[0], "builtin_fallback", warning
+
+            warning = (
+                (warning + "; ") if warning else ""
+            ) + (
+                f"Selected task type '{selected.id}' is not human-capable; "
+                f"using fallback '{fallback.id}'."
             )
-        return selected
+            return fallback, "fallback", warning
+
+        return selected, selection_source, warning
 
     def append_request(
         self,
@@ -213,8 +465,16 @@ class HumanAPI:
         request_id = f"hr-{uuid4().hex[:12]}"
         now = datetime.now(timezone.utc).isoformat()
         task_id = task.get("id")
-        task_type = self._resolve_task_type(task_type_id or task.get("human_task_type"))
+        task_type, selection_source, config_warning = self._resolve_task_type_for_request(
+            task, reason, task_type_id
+        )
         deliverables = "".join(f"  - {field}\n" for field in task_type.required_fields)
+        config_warning_line = (
+            f"TASK_TYPE_CONFIG_WARNING: {config_warning}\n" if config_warning else ""
+        )
+        config_warning_why = (
+            f"  - Task type config warning: {config_warning}\n" if config_warning else ""
+        )
 
         request = (
             f"REQUEST_ID: {request_id}\n"
@@ -228,6 +488,10 @@ class HumanAPI:
             "TIME_REQUIRED_MIN: 15\n"
             f"CONTEXT: Task {task_id} escalated.\n"
             f"TASK_TYPE_ID: {task_type.id}\n"
+            f"TASK_CATEGORY: {task_type.category}\n"
+            f"TASK_TYPE_SELECTION_SOURCE: {selection_source}\n"
+            f"WHO_CAN_DO_IT: {','.join(task_type.who_can_do_it)}\n"
+            f"{config_warning_line}"
             f"TASK_TYPE_WHEN_TO_USE: {task_type.when_to_use}\n"
             "DELIVERABLES:\n"
             f"{deliverables}"
@@ -238,6 +502,7 @@ class HumanAPI:
             "WHY:\n"
             f"  - Escalation trigger: {reason}\n"
             "  - Automated loop reached termination condition\n"
+            f"{config_warning_why}"
             f"UNBLOCKS: Task {task_id} can proceed with clear decision\n"
             "DIAGNOSIS_PACKET:\n"
             f"  - last_exit_code: {diagnosis_packet.get('last_exit_code', 'unknown')}\n"

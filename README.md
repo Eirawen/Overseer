@@ -1,5 +1,7 @@
 # Overseer
 
+Overseer is an open-source, self-hosted orchestration layer for running Codex-style work against your own repositories and your own infrastructure. The intended operator model is a single trusted user on a local machine or private box, not a hosted multi-tenant control plane.
+
 ## Setup
 
 
@@ -18,6 +20,15 @@ Run the web UI with one command:
 
 Then open `http://127.0.0.1:5173` and point the API root to your running daemon (default `http://127.0.0.1:8765`).
 
+One-command local dev stack (starts Overseer API + Vite UI, local backend by default):
+
+```bash
+./scripts/start-dev-ui.sh
+```
+
+The web chat now talks to `OverseerCoreGraph` sessions (not just run submission), so you can use normal prompts
+and chat commands like `/status`, `/plan`, `/tick`, `/new`, and `/resume <session_id>`.
+
 UI quality gates (TypeScript + frontend tests):
 
 ```bash
@@ -26,6 +37,17 @@ npm --prefix ui run test
 npm --prefix ui run build
 ```
 
+## What It Is
+
+- Self-hosted and local-first
+- Centered on your own `codex/` project state, worktrees, and telemetry
+- Optimized for a trusted operator workflow, not an internet-facing SaaS product
+- Able to use a simple local backend by default, with optional Celery/Redis for heavier self-hosted setups
+
+## The Premise
+
+
+We are operating in a moment where large language models are no longer mere assistants. They are capable of:
 
 LLM's aren't just helpful, harmless assistants anymore. They are capable of:
 - Designing systems

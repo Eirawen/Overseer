@@ -1,6 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { cancelRun, fetchQueue, fetchRunLogs, fetchRuns, getWsRoot, resolveQueueRequest } from '../api';
+import {
+  cancelRun,
+  createSession,
+  fetchQueue,
+  fetchRunLogs,
+  fetchRuns,
+  fetchSession,
+  getWsRoot,
+  resolveQueueRequest,
+  sendMessage,
+  tickSession,
+} from '../api';
 
 describe('getWsRoot', () => {
   it('maps http to ws', () => {
@@ -49,6 +60,38 @@ describe('api fetch helpers', () => {
       stdout: 'out',
       stderr: 'err',
     });
+  });
+
+  it('supports session chat endpoints and session-aware message routing', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ session_id: 'sess-1', mode: 'conversation' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ session_id: 'sess-1', mode: 'conversation' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ session_id: 'sess-1', assistant_text: 'Tick processed.' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ session_id: 'sess-1', assistant_text: 'hello' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ session_id: 'sess-2', assistant_text: 'new' }) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(createSession('http://x')).resolves.toEqual({ session_id: 'sess-1', mode: 'conversation' });
+    await expect(fetchSession('http://x', 'sess-1')).resolves.toEqual({ session_id: 'sess-1', mode: 'conversation' });
+    await expect(tickSession('http://x', 'sess-1')).resolves.toEqual({
+      session_id: 'sess-1',
+      assistant_text: 'Tick processed.',
+    });
+    await expect(sendMessage('http://x', 'hello', 'sess-1')).resolves.toEqual({
+      session_id: 'sess-1',
+      assistant_text: 'hello',
+    });
+    await expect(sendMessage('http://x', 'new chat')).resolves.toEqual({
+      session_id: 'sess-2',
+      assistant_text: 'new',
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('http://x/sessions');
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('http://x/sessions/sess-1');
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('http://x/sessions/sess-1/tick');
+    expect(fetchMock.mock.calls[3]?.[0]).toBe('http://x/sessions/sess-1/message');
+    expect(fetchMock.mock.calls[4]?.[0]).toBe('http://x/message');
   });
 
   it('throws on non-2xx responses', async () => {

@@ -1,0 +1,10 @@
+name: overseer
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - git
+  - pip:
+      - -e ".[dev]"
+      - websockets>=12,<16

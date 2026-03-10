@@ -1,0 +1,67 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Python packaging / build artifacts
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Virtualenv / Conda
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+!.env.example
+.python-version
+.conda/
+conda-meta/
+
+# Logs / local runtime scratch
+*.log
+/meta.json
+
+# Frontend (ui/)
+ui/node_modules/
+ui/dist/
+ui/.vite/
+ui/coverage/
+*.tsbuildinfo
+
+# Overseer/Codex runtime artifacts (keep canonical docs/config tracked)
+codex/08_TELEMETRY/**
+!codex/08_TELEMETRY/
+!codex/08_TELEMETRY/.gitkeep
+!codex/08_TELEMETRY/README.md
+
+codex/10_OVERSEER/locks/
+codex/10_OVERSEER/sessions/
+
+# Optional local outputs
+tmp/
+.cache/

@@ -73,6 +73,29 @@ class SessionStore:
                 lines = [json.dumps(turn, sort_keys=True) for turn in state["conversation_turns"]]
                 atomic_write_text(transcript_path, "\n".join(lines) + "\n")
 
+    def save_session_as_owner(self, state: dict[str, Any], owner_instance_id: str) -> None:
+        lease_store = self._lease_store()
+        lease_store.assert_primary_owner(state["session_id"], owner_instance_id)
+        self.save_session(state)
+
+    def load_session_with_lease(self, session_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        state = self.load_session(session_id)
+        lease_store = self._lease_store()
+        try:
+            lease = lease_store.read_lease(session_id)
+            lease_payload: dict[str, Any] = lease.__dict__
+        except FileNotFoundError:
+            lease_payload = {"session_id": session_id, "missing": True}
+        return state, lease_payload
+
+    def ensure_session_lease(self, session_id: str, owner_instance_id: str):
+        lease_store = self._lease_store()
+        return lease_store.ensure_lease(session_id, owner_instance_id)
+
+    def assert_primary_session_owner(self, session_id: str, owner_instance_id: str) -> None:
+        lease_store = self._lease_store()
+        lease_store.assert_primary_owner(session_id, owner_instance_id)
+
     def list_sessions(self) -> list[str]:
         if not self.sessions_root.exists():
             return []
@@ -81,3 +104,8 @@ class SessionStore:
             if path.is_dir() and (path / "state.json").exists():
                 sessions.append(path.name)
         return sessions
+
+    def _lease_store(self):
+        from overseer.handoff.lease import SessionLeaseStore
+
+        return SessionLeaseStore(self.codex_store)

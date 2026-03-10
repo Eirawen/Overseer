@@ -10,6 +10,9 @@ RunState = Literal["queued", "running", "canceling", "done", "failed", "canceled
 class RunRequest:
     task_id: str
     objective: str
+    run_id: str | None = None
+    instructions_payload: str | None = None
+    prompt_metadata: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)

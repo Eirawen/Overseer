@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -11,7 +12,13 @@ def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
     """Write text to path atomically (temp file + os.replace)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    os.close(fd)
+    tmp = Path(tmp_name)
     try:
         tmp.write_text(text, encoding=encoding)
         os.replace(tmp, path)

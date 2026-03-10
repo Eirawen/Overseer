@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from overseer.codex_store import CodexStore
 from overseer.execution.backend import ExecutionBackend, ExecutionRecord
+from overseer.handoff.service import HandoffService
 from overseer.human_api import HumanAPI
 from overseer.integrators.base import RunRequest, RunResult
 from overseer.llm import FakeLLM
@@ -36,12 +41,17 @@ class FakeIntegrator:
         self.fail_submit = fail_submit
         self._counter = 0
         self._runs: dict[str, dict[str, str | int]] = {}
+        self.submitted_requests: list[RunRequest] = []
 
     def submit(self, request: RunRequest) -> str:
         if self.fail_submit:
             raise RuntimeError("codex CLI not installed or not on PATH")
-        self._counter += 1
-        run_id = f"run-fake-{self._counter}"
+        self.submitted_requests.append(request)
+        if request.run_id:
+            run_id = request.run_id
+        else:
+            self._counter += 1
+            run_id = f"run-fake-{self._counter}"
         self._runs[run_id] = {"task_id": request.task_id, "status": "queued", "calls": 0}
         return run_id
 
@@ -120,7 +130,7 @@ def test_transition_to_planning_and_artifacts_written(tmp_path: Path) -> None:
 
 
 def test_execution_spawns_run_non_blocking(tmp_path: Path) -> None:
-    graph, _ = _build_graph(tmp_path)
+    graph, store = _build_graph(tmp_path)
     session_id = graph.create_session()
 
     start = time.perf_counter()
@@ -129,6 +139,131 @@ def test_execution_spawns_run_non_blocking(tmp_path: Path) -> None:
 
     assert elapsed < 1.0
     assert state["active_runs"]
+    run_id = next(iter(state["active_runs"]))
+    run_root = store.codex_root / "08_TELEMETRY" / "runs" / run_id
+    assert (run_root / "prompt_pack.md").exists()
+    assert (run_root / "prompt_pack.json").exists()
+
+    prompt_pack_json = json.loads((run_root / "prompt_pack.json").read_text(encoding="utf-8"))
+    metadata = prompt_pack_json["metadata"]
+    assert metadata["run_id"] == run_id
+    assert "warnings" in metadata
+    assert metadata["audit_paths"]["prompt_pack_json"].endswith(f"{run_id}/prompt_pack.json")
+    composed_prompt = prompt_pack_json["composed_prompt"]
+    assert composed_prompt.index("# System Instructions (Always Insert)") < composed_prompt.index("# Project Context")
+    assert composed_prompt.index("# Project Context") < composed_prompt.index("# Run Objective")
+    assert composed_prompt.index("# Run Objective") < composed_prompt.index("# Execution Constraints")
+
+
+def test_graph_passes_prompt_metadata_and_composed_prompt_to_integrator(tmp_path: Path) -> None:
+    graph, _ = _build_graph(tmp_path)
+    assert isinstance(graph.integrator, FakeIntegrator)
+    session_id = graph.create_session()
+
+    graph.submit_user_message(session_id, "build metadata handoff")
+
+    assert graph.integrator.submitted_requests
+    request = graph.integrator.submitted_requests[0]
+    assert request.instructions_payload is not None
+    assert "# System Instructions (Always Insert)" in request.instructions_payload
+    assert request.prompt_metadata is not None
+    assert request.prompt_metadata["task_id"] == request.task_id
+    assert request.prompt_metadata["run_id"] == request.run_id
+
+
+def test_review_runs_also_persist_prompt_packs(tmp_path: Path) -> None:
+    graph, store = _build_graph(tmp_path)
+    session_id = graph.create_session()
+    graph.submit_user_message(session_id, "build review prompt packs")
+
+    state = graph.load_state(session_id)
+    for _ in range(6):
+        state = graph.tick(session_id)
+        kinds = {meta["kind"] for meta in state.get("active_runs", {}).values()}
+        if "reviewer" in kinds and "verifier" in kinds:
+            break
+
+    review_runs = [meta for meta in state.get("active_runs", {}).values() if meta.get("kind") in {"reviewer", "verifier"}]
+    assert review_runs
+    for run_meta in review_runs:
+        run_root = store.codex_root / "08_TELEMETRY" / "runs" / str(run_meta["run_id"])
+        assert (run_root / "prompt_pack.md").exists()
+        assert (run_root / "prompt_pack.json").exists()
+
+
+def test_graph_escalates_on_integrator_run_id_mismatch(tmp_path: Path) -> None:
+    class MismatchIntegrator(FakeIntegrator):
+        def submit(self, request: RunRequest) -> str:
+            super().submit(request)
+            return "run-mismatch"
+
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    _init_repo(repo)
+    store = CodexStore(repo)
+    store.init_structure()
+    task_store = TaskStore(store)
+    human_api = HumanAPI(store)
+    graph = OverseerCoreGraph.build(
+        codex_store=store,
+        task_store=task_store,
+        human_api=human_api,
+        backend=DummyBackend(),
+        integrator=MismatchIntegrator(),
+        llm=FakeLLM(responses={"build": "Plan it"}),
+    )
+
+    session_id = graph.create_session()
+    state = graph.submit_user_message(session_id, "build mismatch")
+    assert state["mode"] == "escalated"
+    assert "unexpected run id" in str(state["escalation_reason"])
+
+
+def test_prompt_pack_persisted_before_submit(tmp_path: Path) -> None:
+    class AuditingIntegrator:
+        def __init__(self, store: CodexStore) -> None:
+            self.store = store
+            self.checked = False
+            self._runs: dict[str, dict[str, Any]] = {}
+
+        def submit(self, request: RunRequest) -> str:
+            assert request.run_id is not None
+            run_root = self.store.codex_root / "08_TELEMETRY" / "runs" / request.run_id
+            assert (run_root / "prompt_pack.md").exists()
+            assert (run_root / "prompt_pack.json").exists()
+            self.checked = True
+            self._runs[request.run_id] = {"task_id": request.task_id, "status": "queued", "calls": 0}
+            return request.run_id
+
+        def status(self, run_id: str) -> RunResult:
+            return RunResult(run_id=run_id, task_id=str(self._runs[run_id]["task_id"]), status="queued")
+
+        def runs(self) -> list[RunResult]:
+            return []
+
+        def cancel(self, run_id: str) -> RunResult:
+            return RunResult(run_id=run_id, task_id=str(self._runs[run_id]["task_id"]), status="canceled")
+
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    _init_repo(repo)
+    store = CodexStore(repo)
+    store.init_structure()
+    task_store = TaskStore(store)
+    human_api = HumanAPI(store)
+    integrator = AuditingIntegrator(store)
+    graph = OverseerCoreGraph.build(
+        codex_store=store,
+        task_store=task_store,
+        human_api=human_api,
+        backend=DummyBackend(),
+        integrator=integrator,  # type: ignore[arg-type]
+        llm=FakeLLM(responses={"build": "Plan it"}),
+    )
+
+    session_id = graph.create_session()
+    graph.submit_user_message(session_id, "build pre submit audit")
+    assert integrator.checked is True
 
 
 def test_polling_completes_runs_and_decides(tmp_path: Path) -> None:
@@ -208,3 +343,89 @@ def test_poll_uses_backend_status(tmp_path: Path) -> None:
     graph.submit_user_message(session_id, "build backend polling")
     graph.tick(session_id)
     assert backend.calls >= 1
+
+
+def test_handoff_owner_enforced_for_graph_mutations(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    _init_repo(repo)
+    store = CodexStore(repo)
+    store.init_structure()
+    task_store = TaskStore(store)
+    human_api = HumanAPI(store)
+    backend = DummyBackend()
+
+    owner_service = HandoffService(store, SessionStore(store), instance_id="ovr-owner")
+    owner_graph = OverseerCoreGraph.build(
+        codex_store=store,
+        task_store=task_store,
+        human_api=human_api,
+        backend=backend,
+        integrator=FakeIntegrator(),
+        llm=FakeLLM(responses={"build": "Plan it"}),
+        handoff_service=owner_service,
+        instance_id="ovr-owner",
+    )
+    session_id = owner_graph.create_session()
+
+    intruder_service = HandoffService(store, SessionStore(store), instance_id="ovr-intruder")
+    intruder_graph = OverseerCoreGraph.build(
+        codex_store=store,
+        task_store=task_store,
+        human_api=human_api,
+        backend=backend,
+        integrator=FakeIntegrator(),
+        llm=FakeLLM(responses={"build": "Plan it"}),
+        handoff_service=intruder_service,
+        instance_id="ovr-intruder",
+    )
+
+    with pytest.raises(PermissionError, match="session lease owned by ovr-owner"):
+        intruder_graph.tick(session_id)
+
+
+def test_graph_emits_handoff_recommendation_event_when_pressure_crosses_threshold(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    _init_repo(repo)
+    store = CodexStore(repo)
+    store.init_structure()
+    # Tiny budgets force recommendation on first message.
+    (store.codex_root / "10_OVERSEER" / "HANDOFF_POLICY.json").write_text(
+        json.dumps(
+            {
+                "protocol_version": 1,
+                "pressure": {
+                    "state_bytes_budget": 10,
+                    "conversation_turn_budget": 1,
+                    "conversation_bytes_budget": 10,
+                    "observe_threshold": 0.1,
+                    "switch_threshold": 0.9,
+                },
+                "checkpoint": {"tail_turns": 12, "max_latest_response_chars": 300, "max_plan_items": 20, "max_active_runs": 20},
+                "recommendation": {"emit_once_per_lease_epoch_per_band": True},
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    task_store = TaskStore(store)
+    human_api = HumanAPI(store)
+    handoff_service = HandoffService(store, SessionStore(store), instance_id="ovr-owner")
+    graph = OverseerCoreGraph.build(
+        codex_store=store,
+        task_store=task_store,
+        human_api=human_api,
+        backend=DummyBackend(),
+        integrator=FakeIntegrator(),
+        llm=FakeLLM(responses={"build": "Plan it"}),
+        handoff_service=handoff_service,
+        instance_id="ovr-owner",
+    )
+    session_id = graph.create_session()
+    graph.submit_user_message(session_id, "build x")
+
+    events_path = store.codex_root / "08_TELEMETRY" / "sessions" / session_id / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert any(event["type"] == "handoff_recommended" for event in events)
