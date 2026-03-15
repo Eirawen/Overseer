@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,7 @@ class TerminationPolicy:
     max_test_failures_without_progress: int
 
     @classmethod
+    @functools.lru_cache(maxsize=None)
     def from_codex(cls, codex_root: Path) -> "TerminationPolicy":
         termination_file = codex_root / "05_AGENTS" / "TERMINATION.md"
         text = termination_file.read_text(encoding="utf-8")
@@ -23,7 +25,9 @@ class TerminationPolicy:
             2,
             allow_word_number=True,
         )
-        test_failures = _extract_int(text, r"tests fail\s*(\w+)\s*without progress", 2, allow_word_number=True)
+        test_failures = _extract_int(
+            text, r"tests fail\s*(\w+)\s*without progress", 2, allow_word_number=True
+        )
         return cls(
             max_review_cycles=review_cycles,
             max_verifier_disputes=verifier_disputes,
