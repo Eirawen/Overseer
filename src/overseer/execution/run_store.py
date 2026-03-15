@@ -177,9 +177,18 @@ class SQLiteRunStore:
         filters = filters or {}
         clauses: list[str] = []
         params: list[Any] = []
-        if "status" in filters and filters["status"] is not None:
-            clauses.append("status = ?")
-            params.append(filters["status"])
+
+        allowed_filters = {
+            "status": "status = ?",
+            "task_id": "task_id = ?",
+            "run_id": "run_id = ?",
+        }
+
+        for key, clause in allowed_filters.items():
+            if key in filters and filters[key] is not None:
+                clauses.append(clause)
+                params.append(filters[key])
+
         sql = "SELECT * FROM runs"
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
@@ -209,9 +218,16 @@ class SQLiteRunStore:
         if "meta_json" in updated_fields:
             updated_fields["meta_json"] = json.dumps(updated_fields["meta_json"])
 
-        for key in ["task_id", "heartbeat_at", "pid", "exit_code", "meta_json"]:
+        allowed_fields = {
+            "task_id": "task_id = ?",
+            "heartbeat_at": "heartbeat_at = ?",
+            "pid": "pid = ?",
+            "exit_code": "exit_code = ?",
+            "meta_json": "meta_json = ?",
+        }
+        for key, column_clause in allowed_fields.items():
             if key in updated_fields:
-                columns.append(f"{key} = ?")
+                columns.append(column_clause)
                 values.append(updated_fields[key])
 
         values.append(run_id)
