@@ -11,8 +11,19 @@ import {
   type RunRecord,
 } from './api';
 
+import {
+  type SpeechRecognitionCtor,
+  type SpeechRecognitionLike,
+} from './types';
+import {
+  buildFormattedRationale,
+  copyToClipboard,
+  getSpeechRecognitionCtor,
+  readVoiceEnabled,
+  writeVoiceEnabled,
+} from './utils';
+
 const DEFAULT_API_ROOT = 'http://127.0.0.1:8765';
-const VOICE_ENABLED_STORAGE_KEY = 'overseer.voice.enabled';
 
 type ChatMessage = {
   role: 'human' | 'system';
@@ -30,70 +41,6 @@ type EventEnvelope = {
     };
   };
 };
-
-type SpeechRecognitionEventLike = {
-  results: ArrayLike<ArrayLike<{ transcript?: string }>>;
-};
-
-type SpeechRecognitionLike = {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  onerror: (() => void) | null;
-  onend: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-};
-
-type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
-
-type FeatureFlags = {
-  voiceEnabled?: boolean;
-};
-
-declare global {
-  interface Window {
-    webkitSpeechRecognition?: SpeechRecognitionCtor;
-    SpeechRecognition?: SpeechRecognitionCtor;
-    __OVERSEER_FLAGS__?: FeatureFlags;
-  }
-}
-
-function buildFormattedRationale(replyFormat: string | null | undefined, choice: string, rationale: string): string {
-  const trimmed = rationale.trim();
-  if (!replyFormat) {
-    return trimmed;
-  }
-  return `REPLY_FORMAT: ${replyFormat}
-CHOICE: ${choice}
-RATIONALE: ${trimmed}`;
-}
-
-function readVoiceEnabled(): boolean {
-  const runtimeOverride = window.__OVERSEER_FLAGS__?.voiceEnabled;
-  if (typeof runtimeOverride === 'boolean') {
-    return runtimeOverride;
-  }
-
-  const persisted = window.localStorage.getItem(VOICE_ENABLED_STORAGE_KEY);
-  if (persisted === 'true') {
-    return true;
-  }
-  if (persisted === 'false') {
-    return false;
-  }
-
-  return String(import.meta.env.VITE_VOICE_ENABLED ?? '').toLowerCase() === 'true';
-}
-
-function writeVoiceEnabled(enabled: boolean): void {
-  window.localStorage.setItem(VOICE_ENABLED_STORAGE_KEY, enabled ? 'true' : 'false');
-}
-
-function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
-  return window.SpeechRecognition ?? window.webkitSpeechRecognition ?? null;
-}
 
 export function App(): JSX.Element {
   const [apiRoot, setApiRoot] = useState<string>(DEFAULT_API_ROOT);
@@ -353,12 +300,14 @@ export function App(): JSX.Element {
     if (!value) {
       return;
     }
-    try {
-      await navigator.clipboard.writeText(value);
-      setChatMessages((prev) => [...prev, { role: 'system', text: `Copied ${label} path.` }]);
-    } catch {
-      setChatMessages((prev) => [...prev, { role: 'system', text: `Failed to copy ${label} path.` }]);
-    }
+    const success = await copyToClipboard(value);
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        role: 'system',
+        text: success ? `Copied ${label} path.` : `Failed to copy ${label} path.`,
+      },
+    ]);
   };
 
   return (
