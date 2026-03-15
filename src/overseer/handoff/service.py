@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from overseer.codex_store import CodexStore
 from overseer.fs import atomic_write_text
-from overseer.handoff.checkpoint import HandoffCheckpoint, HandoffCheckpointStore
+from overseer.handoff.checkpoint import HandoffCheckpoint, HandoffCheckpointStore, HandoffNote
 from overseer.handoff.lease import SessionLease, SessionLeaseStore
 from overseer.handoff.pressure import PressureAssessment, PressureInputs, PressurePolicy, assess_pressure
 from overseer.locks import file_lock
@@ -166,14 +166,30 @@ class HandoffService:
         lease = self.lease_store.read_lease(session_id)
         if observer_instance_id not in lease.observer_instance_ids:
             raise PermissionError(f"observer not registered: {observer_instance_id}")
-        self.checkpoints.append_note(session_id, handoff_id, "observer", observer_instance_id, text)
+        self.checkpoints.append_note(
+            HandoffNote(
+                session_id=session_id,
+                handoff_id=handoff_id,
+                role="observer",
+                author_instance_id=observer_instance_id,
+                text=text,
+            )
+        )
         self.checkpoints.append_event(
             session_id, handoff_id, "handoff_observer_note", {"observer_instance_id": observer_instance_id}
         )
         self._append_session_event(session_id, "handoff_observer_note", {"handoff_id": handoff_id, "observer_instance_id": observer_instance_id})
 
     def append_advisor_note(self, session_id: str, handoff_id: str, prior_owner_instance_id: str, text: str) -> None:
-        self.checkpoints.append_note(session_id, handoff_id, "advisor", prior_owner_instance_id, text)
+        self.checkpoints.append_note(
+            HandoffNote(
+                session_id=session_id,
+                handoff_id=handoff_id,
+                role="advisor",
+                author_instance_id=prior_owner_instance_id,
+                text=text,
+            )
+        )
         self.checkpoints.append_event(
             session_id, handoff_id, "handoff_advisor_note", {"prior_owner_instance_id": prior_owner_instance_id}
         )
