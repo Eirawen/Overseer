@@ -175,11 +175,14 @@ class SQLiteRunStore:
 
     def list_runs(self, filters: dict[str, Any] | None = None) -> list[StoredRun]:
         filters = filters or {}
+        allowed_filters = {"status", "task_id", "run_id"}
         clauses: list[str] = []
         params: list[Any] = []
-        if "status" in filters and filters["status"] is not None:
-            clauses.append("status = ?")
-            params.append(filters["status"])
+        for key, value in filters.items():
+            if key in allowed_filters and value is not None:
+                clauses.append(f"{key} = ?")
+                params.append(value)
+
         sql = "SELECT * FROM runs"
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
