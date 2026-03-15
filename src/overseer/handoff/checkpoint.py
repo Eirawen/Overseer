@@ -17,6 +17,15 @@ def _utc_now() -> str:
 
 
 @dataclass(frozen=True)
+class HandoffNote:
+    session_id: str
+    handoff_id: str
+    role: str
+    author_instance_id: str
+    text: str
+
+
+@dataclass(frozen=True)
 class HandoffCheckpoint:
     handoff_id: str
     session_id: str
@@ -94,16 +103,16 @@ class HandoffCheckpointStore:
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(event, sort_keys=True) + "\n")
 
-    def append_note(self, session_id: str, handoff_id: str, role: str, author_instance_id: str, text: str) -> Path:
-        if role not in {"observer", "advisor"}:
+    def append_note(self, note: HandoffNote) -> Path:
+        if note.role not in {"observer", "advisor"}:
             raise ValueError("role must be observer or advisor")
-        path = self.handoff_root(session_id, handoff_id) / f"{role}_notes.md"
-        lock = self._locks_root / f"handoff-note-{session_id}-{handoff_id}-{role}.lock"
+        path = self.handoff_root(note.session_id, note.handoff_id) / f"{note.role}_notes.md"
+        lock = self._locks_root / f"handoff-note-{note.session_id}-{note.handoff_id}-{note.role}.lock"
         self.codex_store.assert_write_allowed("overseer", path)
         path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists():
-            atomic_write_text(path, f"# {role.title()} Notes\n")
-        line = f"\n- [{_utc_now()}] {author_instance_id}: {text.strip()}\n"
+            atomic_write_text(path, f"# {note.role.title()} Notes\n")
+        line = f"\n- [{_utc_now()}] {note.author_instance_id}: {note.text.strip()}\n"
         with file_lock(lock):
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(line)
