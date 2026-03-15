@@ -292,21 +292,16 @@ class LocalBackend:
         record.status = "canceling"
         return self._persist_record(record, status="canceling")
 
-    def run_worker(self, run_id: str | Path) -> int:
-        run_id = self._normalize_run_id(run_id)
-        record = self._to_record(self.run_store.get_run(run_id))
-        if record.status in {"canceling", "canceled"}:
-            if record.status == "canceling":
-                self.cancel(run_id)
-            return 1
-
+    def _on_worker_start(self, run_id: str, record: ExecutionRecord) -> ExecutionRecord:
         record.status = "running"
         record.started_at = datetime.now(timezone.utc).isoformat()
         record.worker_pid = os.getpid()
         record = self._persist_record(record, status="running")
         self.run_store.heartbeat(run_id)
         self._append_event(run_id, "status_change", {"status": "running", "started_at": record.started_at})
+        return record
 
+    def _execute_run(self, run_id: str, record: ExecutionRecord) -> int:
         with file_lock(Path(record.lock_path)):
             with (
                 Path(record.stdout_log).open("w", encoding="utf-8") as stdout_handle,
@@ -351,7 +346,9 @@ class LocalBackend:
                 result_exit_code = process.wait()
                 stdout_thread.join(timeout=2)
                 stderr_thread.join(timeout=2)
+        return result_exit_code
 
+    def _on_worker_finish(self, run_id: str, record: ExecutionRecord, exit_code: int) -> int:
         self._write_required_notes(record)
 
         refreshed = self._to_record(self.run_store.get_run(run_id))
@@ -368,8 +365,8 @@ class LocalBackend:
             return refreshed.exit_code or 1
         if refreshed.status not in TERMINAL_STATUSES:
             refreshed.ended_at = datetime.now(timezone.utc).isoformat()
-            refreshed.exit_code = result_exit_code
-            refreshed.status = "done" if result_exit_code == 0 else "failed"
+            refreshed.exit_code = exit_code
+            refreshed.status = "done" if exit_code == 0 else "failed"
             reason = None if refreshed.status == "done" else "process_failed"
             self._append_event(
                 run_id,
@@ -377,7 +374,19 @@ class LocalBackend:
                 {"ended_at": refreshed.ended_at, "exit_code": refreshed.exit_code, "status": refreshed.status},
             )
             self._persist_record(refreshed, status=refreshed.status, reason=reason)
-        return result_exit_code
+        return exit_code
+
+    def run_worker(self, run_id: str | Path) -> int:
+        run_id = self._normalize_run_id(run_id)
+        record = self._to_record(self.run_store.get_run(run_id))
+        if record.status in {"canceling", "canceled"}:
+            if record.status == "canceling":
+                self.cancel(run_id)
+            return 1
+
+        record = self._on_worker_start(run_id, record)
+        exit_code = self._execute_run(run_id, record)
+        return self._on_worker_finish(run_id, record, exit_code)
 
     def reconcile(self, stale_after_seconds: int) -> list[ExecutionRecord]:
         now = datetime.now(timezone.utc)
