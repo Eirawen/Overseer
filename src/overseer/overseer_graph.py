@@ -357,13 +357,34 @@ class OverseerCoreGraph:
         plan = state.get("plan", [])
         pending_human = list(state.get("pending_human_requests", []))
 
+        runs_by_step: dict[str, list[RunMeta]] = {}
+        for r in active.values():
+            sid = r.get("step_id")
+            if sid:
+                runs_by_step.setdefault(sid, []).append(r)
+
         for step in plan:
-            step_runs = [r for r in active.values() if r.get("step_id") == step["id"]]
+            step_runs = runs_by_step.get(step["id"], [])
             if not step_runs:
                 continue
-            if any(r.get("status") in {"queued", "running", "canceling"} for r in step_runs):
+
+            has_active = False
+            has_failed = False
+            all_done = True
+            for r in step_runs:
+                status = r.get("status")
+                if status in {"queued", "running", "canceling"}:
+                    has_active = True
+                    break
+                if status in {"failed", "canceled"}:
+                    has_failed = True
+                if status != "done":
+                    all_done = False
+
+            if has_active:
                 continue
-            if any(r.get("status") in {"failed", "canceled"} for r in step_runs):
+
+            if has_failed:
                 self._escalate(state, f"step {step['id']} had failed run(s)")
                 pending_human = [req.request_id for req in self.human_api.list_requests() if req.status == "pending"]
                 step["status"] = "escalated"
@@ -374,10 +395,11 @@ class OverseerCoreGraph:
                     "pending_human_requests": pending_human,
                     "latest_response": "Escalated to human queue due to failed runs.",
                 }
-            if all(r.get("status") == "done" for r in step_runs):
+
+            if all_done:
                 step["status"] = "done"
-                for run_id in [r["run_id"] for r in step_runs]:
-                    active.pop(run_id, None)
+                for r in step_runs:
+                    active.pop(r["run_id"], None)
                 self._append_memory(f"Session {state['session_id']} completed {step['id']}: {step['title']}")
                 self._emit_event(state["session_id"], "step_done", {"step_id": step["id"]})
 
