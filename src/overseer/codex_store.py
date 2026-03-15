@@ -69,7 +69,7 @@ class CodexStore:
     def assert_write_allowed(self, actor: str, target: Path) -> None:
         target = target.resolve()
         codex_root = self.codex_root.resolve()
-        if not str(target).startswith(str(codex_root)):
+        if not target.is_relative_to(codex_root):
             raise PermissionError("Writes are only allowed inside codex")
 
         telemetry_root = (self.codex_root / "08_TELEMETRY").resolve()
@@ -82,13 +82,13 @@ class CodexStore:
             (self.codex_root / "05_AGENTS").resolve(),
         }
 
-        if str(target).startswith(str(telemetry_root)):
+        if target.is_relative_to(telemetry_root):
             return
         if actor == "overseer":
             return
-        if str(target).startswith(str(workers_root / actor)):
+        if target.is_relative_to(workers_root / actor):
             return
-        if any(str(target).startswith(str(root)) for root in canonical_roots):
+        if any(target.is_relative_to(root) for root in canonical_roots):
             raise PermissionError("Only overseer may write canonical codex files")
 
         raise PermissionError(f"Actor '{actor}' cannot write to {target}")
