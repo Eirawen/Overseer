@@ -116,6 +116,26 @@ def _tail_log(path: Path, line_count: int) -> str:
     return "\n".join(lines[-line_count:])
 
 
+def _read_new_events(path: Path, seen: int) -> tuple[list[str], int]:
+    """
+    Synchronously read new lines from a file from a given offset.
+    Returns a list of non-empty stripped lines and the new offset.
+    """
+    if not path.exists():
+        return [], seen
+    lines: list[str] = []
+    next_offset = seen
+    with path.open(encoding="utf-8") as handle:
+        for idx, line in enumerate(handle):
+            next_offset = idx + 1
+            if idx < seen:
+                continue
+            payload = line.strip()
+            if payload:
+                lines.append(payload)
+    return lines, next_offset
+
+
 def create_app(daemon: OverseerDaemon) -> Any:
     from fastapi import FastAPI, HTTPException
     app = FastAPI(title="Overseer Local API")
@@ -233,27 +253,23 @@ def create_app(daemon: OverseerDaemon) -> Any:
             return sorted(daemon.backend.runs_root.glob("*/events.jsonl"))
 
         async def flush_events() -> None:
-            for events_path in iter_event_paths():
+            paths = await asyncio.to_thread(iter_event_paths)
+            for events_path in paths:
                 key = str(events_path)
                 seen = offsets.get(key, 0)
-                next_offset = seen
-                if not events_path.exists():
-                    offsets[key] = seen
-                    continue
-                with events_path.open(encoding="utf-8") as handle:
-                    for idx, line in enumerate(handle):
-                        next_offset = idx + 1
-                        if idx < seen:
-                            continue
-                        payload = line.strip()
-                        if not payload:
-                            continue
-                        try:
-                            event = json.loads(payload)
-                        except json.JSONDecodeError:
-                            continue
-                        run_id = events_path.parent.name
-                        await websocket.send_json({"type": "event", "run_id": run_id, "event": event})
+
+                payloads, next_offset = await asyncio.to_thread(
+                    _read_new_events, events_path, seen
+                )
+
+                for payload in payloads:
+                    try:
+                        event = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    run_id = events_path.parent.name
+                    await websocket.send_json({"type": "event", "run_id": run_id, "event": event})
+
                 offsets[key] = next_offset
 
         await send_subscription()
